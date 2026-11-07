@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LangGraph 1.2.20 学习站 · 从 StateGraph 到可恢复的多 Agent</title>
+    <meta
+      name="description"
+      content="基于 LangGraph 1.2.20 源码整理的中文学习站：从 StateGraph、Reducer、条件边，到 Command、Send、checkpoint、interrupt、流式、子图、Store、多 Agent 与部署，每处结论标注源码出处。"
+    />
+    <meta property="og:type" content="website" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:site_name" content="LangGraph 1.2.20 学习站" />
+    <meta property="og:title" content="LangGraph 1.2.20 学习站 · 从 StateGraph 到可恢复的多 Agent" />
+    <meta property="og:description" content="从 StateGraph、Reducer、条件边，到 Command、Send、checkpoint、interrupt、流式、子图、Store、多 Agent 与部署。" />
+    <script>
+      try {
+        var t = localStorage.getItem("as-learn-theme");
+        if (!t) t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    </script>
+    <link rel="icon" type="image/svg+xml" href="assets/favicon.svg" />
+    <link rel="stylesheet" href="assets/base.css" />
+    <link rel="stylesheet" href="assets/diagrams.css" />
+  </head>
+  <body data-page="index" data-root=".">
+    <main>
+      <article class="article">
+        <div class="hero">
+          <h1>把 LangGraph 1.2.20 学到「能自己搭一张可恢复的图」</h1>
+          <p class="lede">
+            这不是官方文档的搬运，而是一套按工程落地顺序重排、每个结论都能回源码验证的教程。
+            默认模型是 <strong>DeepSeek</strong>，示例全部是可运行的 Python。每一章都有最小可跑、一次执行的完整链路、
+            以及「你会撞到什么错」。
+          </p>
+        </div>
+
+        <div id="progress-card" class="progress-card"></div>
+
+        <h2 id="start-here">我该从哪儿开始</h2>
+        <ol class="steps">
+          <li>
+            <span class="sh">先花 12 分钟读「学习地图」</span>
+            <div>
+              它会告诉你三条主线怎么用、章节为什么是这个顺序、以及没有 API Key 能学到哪一步。<br /><a
+                href="chapters/00-study-map.html"
+                >→ 00 学习地图</a
+              >
+            </div>
+          </li>
+          <li>
+            <span class="sh">跑通第一张图（约 30 分钟）</span>
+            <div>
+              <a href="chapters/01-setup.html">→ 01 环境与第一个图</a
+              >：一个 <code>StateGraph</code>、两个节点、一条边，<code>compile().invoke()</code> 看到 state 变化。
+            </div>
+          </li>
+          <li>
+            <span class="sh">理解状态与路由（约 80 分钟）</span>
+            <div>
+              <a href="chapters/02-state-reducer.html">→ 02 State 与 Reducer</a>、
+              <a href="chapters/03-nodes-edges.html">03 条件路由</a>：先写对状态更新语义，再让图自己决定下一步。
+            </div>
+          </li>
+        </ol>
+
+        <div class="callout tip">
+          <span class="ct">如果你只想最快验证「这套东西能不能跑」</span>
+          <p>
+            直接看 01 章的<a href="chapters/01-setup.html#minimal">最小可跑</a>：一个 Python 文件、一个
+            <code>StateGraph</code>、一次 <code>invoke</code>，不需要 API Key。
+          </p>
+        </div>
+
+        <h2 id="three-lines">三条学习主线</h2>
+        <div class="compare">
+          <div class="col pick">
+            <h4>① 跟做线：照抄能跑</h4>
+            <ul>
+              <li>每章「最小可跑」都是<strong>完整</strong>代码，不依赖前文的隐藏片段</li>
+              <li>出现过的 API 都能在附录 C 的速查表里查到</li>
+              <li>目标是「先跑起来」，不追求先看懂</li>
+            </ul>
+          </div>
+          <div class="col">
+            <h4>② 理解线：知道它在干什么</h4>
+            <ul>
+              <li>每章「端到端」把一次执行拆成建图、调度、状态合并、持久化四段</li>
+              <li>关键机制给分层图：谁调用谁、状态在哪一步变化、失败在哪一层</li>
+            </ul>
+          </div>
+          <div class="col">
+            <h4>③ 避坑线：出错时知道看哪儿</h4>
+            <ul>
+              <li>每章「陷阱与窍门」按「你会看到 X → 因为 Y → 改成 Z」写</li>
+              <li>重点标出「静态图看起来对、运行时才炸」的边界</li>
+            </ul>
+          </div>
+        </div>
+
+        <h2 id="chapters">章节</h2>
+        <p>
+          全部 25 页已可读：第 00–18 章 + 00A 图执行实验室 + 附录 A–E。从 StateGraph、Reducer、条件边，到
+          Command/Send、checkpoint、interrupt、流式、子图、工具、Agent、记忆、多 Agent、测试与部署。
+        </p>
+
+        <div class="card-grid" data-cards="开始"></div>
+        <h3>图的地基（第 02–07 章）</h3>
+        <div class="card-grid" data-cards="图的地基"></div>
+        <h3>运行时能力（第 08–12 章）</h3>
+        <div class="card-grid" data-cards="运行时能力"></div>
+        <h3>记忆与多 Agent（第 13–15 章）</h3>
+        <div class="card-grid" data-cards="记忆与多 Agent"></div>
+        <h3>工程化（第 16–18 章）</h3>
+        <div class="card-grid" data-cards="工程化"></div>
+        <h3>附录</h3>
+        <div class="card-grid" data-cards="附录"></div>
+
+        <h2 id="truth">事实来源与版本承诺</h2>
+        <p>
+          本站内容严格对应 <strong>LangGraph 1.2.20</strong>，写作时逐条回源核对，来源只有三类：
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>类型</th>
+                <th>路径</th>
+                <th>用来确认什么</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>建图 API</td>
+                <td><code>libs/langgraph/langgraph/graph/</code></td>
+                <td><code>StateGraph</code>、节点、边、编译与 schema 合并</td>
+              </tr>
+              <tr>
+                <td>执行引擎</td>
+                <td><code>libs/langgraph/langgraph/pregel/</code>、<code>channels/</code></td>
+                <td>调度、状态合并、重试、checkpoint 写入时机</td>
+              </tr>
+              <tr>
+                <td>预构建与持久化</td>
+                <td><code>libs/prebuilt/</code>、<code>libs/checkpoint/</code>、<code>libs/checkpoint-postgres/</code></td>
+                <td><code>create_react_agent</code>、<code>ToolNode</code>、<code>BaseCheckpointSaver</code></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="src-line">
+          页面上所有 <span class="src">文件名:行号</span> 形状的胶囊都是出处标签：单击复制完整路径，Ctrl/Cmd +
+          点击在 GitHub 上打开对应文件。
+        </p>
+
+        <div class="callout warn">
+          <span class="ct">已知边界</span>
+          <ul>
+            <li>
+              LangGraph 1.x 与 0.x 的 API 有破坏性变化；网上大量教程仍在使用 0.2/0.3 的写法，迁移前先看附录 D 与 18 章。
+            </li>
+            <li>
+              官方文档覆盖 API 参考；本站不重复翻译，只补「学习顺序、可运行工程、版本差异与踩坑」。
+            </li>
+            <li>进度与主题只保存在本机浏览器 <code>localStorage</code>，不会上传任何数据；首页进度卡可导出/导入 JSON。</li>
+          </ul>
+        </div>
+
+        <h2 id="shortcuts">键盘快捷键</h2>
+        <div class="table-wrap">
+          <table>
+            <tbody>
+              <tr><td><kbd>/</kbd></td><td>聚焦搜索</td></tr>
+              <tr><td><kbd>Esc</kbd></td><td>关闭搜索 / 目录 / 阅读设置</td></tr>
+              <tr><td><kbd>←</kbd> <kbd>→</kbd></td><td>在信息流实验室里切换步骤</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="about">关于这个站</h2>
+        <p>
+          零构建、不联网、不依赖 CDN，<code>file://</code> 直接打开即可阅读。内容与
+          <a href="https://github.com/langchain-ai/langgraph">langchain-ai/langgraph</a> 1.2.20 对齐；
+          源码副本只在本地核对出处，不入库。
+        </p>
+        <p>
+          更新记录见 <code>CHANGELOG.md</code>；部署方式见 <code>DEPLOY.md</code>。
+        </p>
+
+        <h2 id="changelog">更新记录</h2>
+        <ul>
+          <li><strong>v1.0.0</strong>：00–18 章 + 00A 图执行实验室 + 附录 A–E 全部完成，专属练习答案见附录 E。</li>
+        </ul>
+      </article>
+    </main>
+    <script src="assets/nav.js"></script>
+    <script src="assets/mini-highlight.js"></script>
+    <script src="assets/site.js"></script>
+  </body>
+</html>

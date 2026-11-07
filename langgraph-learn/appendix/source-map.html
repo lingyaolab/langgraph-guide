@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="LangGraph 1.2.20 源码模块：graph / pregel / channels / checkpoint / prebuilt / cli 的职责、入口文件与推荐阅读顺序。" />
+    <meta property="og:type" content="article" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:site_name" content="LangGraph 1.2.20 学习站" />
+    <meta property="og:title" content="D 源码地图：langgraph 的模块怎么分 · LangGraph 1.2.20 学习站" />
+    <meta property="og:description" content="LangGraph 1.2.20 源码模块：graph / pregel / channels / checkpoint / prebuilt / cli 的职责、入口文件与推荐阅读顺序。" />
+    <title>D 源码地图：langgraph 的模块怎么分 · LangGraph 1.2.20 学习站</title>
+    <script>
+      try {
+        var t = localStorage.getItem("as-learn-theme");
+        if (!t) t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    </script>
+    <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
+    <link rel="stylesheet" href="../assets/base.css" />
+    <link rel="stylesheet" href="../assets/diagrams.css" />
+  </head>
+  <body data-page="source-map" data-root="..">
+    <main>
+      <article class="article">
+
+        <h1>附录 D · 源码地图</h1>
+        <p class="lede">
+          这张地图按「你为什么会打开它」组织，不按目录字母序。
+          找不到实现时，先判断它属于建图、执行、状态、持久化还是 Agent 封装。
+        </p>
+
+        <h2 id="how">怎么读源码</h2>
+        <ul>
+          <li>先看公开 API 的 docstring，再看它调用的内部函数。</li>
+          <li>遇到「为什么这样」时，看类型定义与默认值，不要只看实现。</li>
+          <li>每读一个模块，回到本站对应章节跑一个最小例子。</li>
+        </ul>
+
+        <h2 id="layout">顶层目录</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>目录</th><th>职责</th><th>你什么时候会打开</th></tr></thead>
+            <tbody>
+              <tr><td><code>libs/langgraph/langgraph/graph/</code></td><td>建图 API</td><td>写 StateGraph / 边 / 编译</td></tr>
+              <tr><td><code>libs/langgraph/langgraph/pregel/</code></td><td>执行引擎</td><td>调度、checkpoint、重试、流式</td></tr>
+              <tr><td><code>libs/langgraph/langgraph/channels/</code></td><td>状态容器</td><td>Reducer / 合并语义</td></tr>
+              <tr><td><code>libs/checkpoint/</code></td><td>持久化契约</td><td>自定义 checkpointer / store</td></tr>
+              <tr><td><code>libs/prebuilt/</code></td><td>预构建 Agent / ToolNode</td><td>工具循环</td></tr>
+              <tr><td><code>libs/cli/</code></td><td>命令行与服务启动</td><td>部署</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="graph">graph：建图 API</h2>
+        <p>
+          <code>StateGraph</code>
+          <span class="src" data-src="libs/langgraph/langgraph/graph/state.py:131">state.py:131</span>
+          负责收集节点、边与 schema；<code>add_node</code>
+          <span class="src" data-src="libs/langgraph/langgraph/graph/state.py:376">state.py:376</span>、
+          <code>add_edge</code>
+          <span class="src" data-src="libs/langgraph/langgraph/graph/state.py:928">state.py:928</span>、
+          <code>add_conditional_edges</code>
+          <span class="src" data-src="libs/langgraph/langgraph/graph/state.py:982">state.py:982</span>
+          都只是记录；<code>compile</code>
+          <span class="src" data-src="libs/langgraph/langgraph/graph/state.py:1177">state.py:1177</span>
+          才生成执行器。
+        </p>
+        <p>
+          <code>message.py</code>
+          <span class="src" data-src="libs/langgraph/langgraph/graph/message.py:64">message.py:64</span>
+          里的 <code>add_messages</code> 与 <code>MessagesState</code> 是消息状态的入口。
+        </p>
+
+        <h2 id="pregel">pregel：执行引擎</h2>
+        <p>
+          <code>Pregel</code>
+          <span class="src" data-src="libs/langgraph/langgraph/pregel/main.py:456">main.py:456</span>
+          是编译后的执行器。入口方法：
+          <code>invoke</code>
+          <span class="src" data-src="libs/langgraph/langgraph/pregel/main.py:3870">main.py:3870</span>、
+          <code>stream</code>
+          <span class="src" data-src="libs/langgraph/langgraph/pregel/main.py:2705">main.py:2705</span>、
+          <code>get_state</code>
+          <span class="src" data-src="libs/langgraph/langgraph/pregel/main.py:1460">main.py:1460</span>、
+          <code>update_state</code>
+          <span class="src" data-src="libs/langgraph/langgraph/pregel/main.py:2613">main.py:2613</span>。
+          checkpoint 写入在 <code>_loop.py</code>
+          <span class="src" data-src="libs/langgraph/langgraph/pregel/_loop.py:768">_loop.py:768</span>，
+          递归上限在 <span class="src" data-src="libs/langgraph/langgraph/pregel/_loop.py:1917">_loop.py:1917</span>。
+        </p>
+
+        <h2 id="checkpoint">checkpoint：持久化</h2>
+        <p>
+          契约在 <code>BaseCheckpointSaver</code>
+          <span class="src" data-src="libs/checkpoint/langgraph/checkpoint/base/__init__.py:199">base/__init__.py:199</span>；
+          内存版 <span class="src" data-src="libs/checkpoint/langgraph/checkpoint/memory/__init__.py:34">memory/__init__.py:34</span>、
+          SQLite <span class="src" data-src="libs/checkpoint-sqlite/langgraph/checkpoint/sqlite/__init__.py:49">sqlite/__init__.py:49</span>、
+          Postgres <span class="src" data-src="libs/checkpoint-postgres/langgraph/checkpoint/postgres/__init__.py:45">postgres/__init__.py:45</span>。
+          Store 契约在 <code>store/base/__init__.py</code>
+          <span class="src" data-src="libs/checkpoint/langgraph/store/base/__init__.py:708">base/__init__.py:708</span>。
+        </p>
+
+        <h2 id="prebuilt">prebuilt：Agent 与 ToolNode</h2>
+        <p>
+          <code>create_react_agent</code>
+          <span class="src" data-src="libs/prebuilt/langgraph/prebuilt/chat_agent_executor.py:278">chat_agent_executor.py:278</span>
+          在 1.2.20 是维护模式；<code>ToolNode</code>
+          <span class="src" data-src="libs/prebuilt/langgraph/prebuilt/tool_node.py:630">tool_node.py:630</span>
+          与 <code>tools_condition</code>
+          <span class="src" data-src="libs/prebuilt/langgraph/prebuilt/tool_node.py:1616">tool_node.py:1616</span>
+          仍是工具循环的常用组件。
+        </p>
+
+        <h2 id="reading">推荐阅读顺序</h2>
+        <ol>
+          <li><code>graph/state.py</code> 的公开方法签名。</li>
+          <li><code>pregel/main.py</code> 的 invoke / stream 与 get_state。</li>
+          <li><code>pregel/_loop.py</code> 的 checkpoint 与递归上限。</li>
+          <li><code>checkpoint/base</code> 的 get_tuple / put / list。</li>
+          <li><code>prebuilt/tool_node.py</code> 的工具执行。</li>
+        </ol>
+
+        <h2 id="next">下一步</h2>
+        <p>看 <a href="exercises.html">附录 E 动手练习答案</a>，把每章的检查点过一遍。</p>
+
+      </article>
+    </main>
+    <script src="../assets/nav.js"></script>
+    <script src="../assets/mini-highlight.js"></script>
+    <script src="../assets/site.js"></script>
+  </body>
+</html>

@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="把 State、条件边、ToolNode、checkpointer、interrupt、Store 与 Supervisor 串成一个可运行的知识库客服服务。" />
+    <meta property="og:type" content="article" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:site_name" content="LangGraph 1.2.20 学习站" />
+    <meta property="og:title" content="17 综合案例：知识库客服（RAG + HITL + 多 Agent） · LangGraph 1.2.20 学习站" />
+    <meta property="og:description" content="把 State、条件边、ToolNode、checkpointer、interrupt、Store 与 Supervisor 串成一个可运行的知识库客服服务。" />
+    <title>17 综合案例：知识库客服（RAG + HITL + 多 Agent） · LangGraph 1.2.20 学习站</title>
+    <script>
+      try {
+        var t = localStorage.getItem("as-learn-theme");
+        if (!t) t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    </script>
+    <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
+    <link rel="stylesheet" href="../assets/base.css" />
+    <link rel="stylesheet" href="../assets/diagrams.css" />
+  </head>
+  <body data-page="17-capstone" data-root="..">
+    <main>
+      <article class="article">
+
+        <h1>17 · 综合案例：知识库客服（RAG + HITL + 多 Agent）</h1>
+        <p class="lede">
+          前面每章只解决一个问题。这一章把它们串起来：一个知识库客服，
+          能检索文档、查工单、记住用户偏好、写操作前问人、出错能恢复。
+          我们按「最小闭环 → 加检索 → 加工具 → 加 HITL → 加多 Agent」推进。
+        </p>
+
+        <h2 id="goals">读完你能做到</h2>
+        <ul class="goals">
+          <li>用一张图串起 State、条件边、ToolNode、checkpointer 与 interrupt</li>
+          <li>把 RAG 检索做成一个节点或工具，并让回答带引用</li>
+          <li>写操作前用 <code>interrupt()</code> 等人确认</li>
+          <li>用 Store 记住用户偏好，用 supervisor 路由到不同角色</li>
+        </ul>
+
+        <h2 id="why">先说为什么：先跑最小闭环</h2>
+        <p>
+          不要一上来就接向量库、多 Agent、语音。先让「用户问 → 模型答 → 状态可恢复」跑通，
+          再加检索；检索通了再加工具；工具有副作用了再加 HITL；角色多了再拆多 Agent。
+          每加一层都保留上一层的验收。
+        </p>
+
+        <h2 id="brief">案例：Atlas 知识库客服</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>需求</th><th>对应能力</th><th>章节</th></tr></thead>
+            <tbody>
+              <tr><td>回答产品手册问题</td><td>RAG 检索节点</td><td>11 / 17</td></tr>
+              <tr><td>查订单 / 工单</td><td>ToolNode + 工具</td><td>11</td></tr>
+              <tr><td>写操作前确认</td><td>interrupt + checkpointer</td><td>05 / 07</td></tr>
+              <tr><td>记住用户偏好</td><td>Store</td><td>13</td></tr>
+              <tr><td>多角色协作</td><td>Supervisor</td><td>14</td></tr>
+              <tr><td>失败可恢复</td><td>checkpoint + 重试</td><td>05 / 10</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="architecture">架构：一张图里的五层</h2>
+        <pre data-lang="text" data-file="请求链路">HTTP / SSE
+  → 鉴权 / thread_id
+  → supervisor（路由）
+  → researcher（检索知识库）
+  → support（回答 + 调工具）
+  → approval（写操作前 interrupt）
+  → END</pre>
+
+        <h2 id="graph">装配：State、节点与边</h2>
+        <pre data-lang="python" data-file="graph.py">from typing import Annotated, Literal, TypedDict
+from operator import add
+
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph import END, START, StateGraph
+
+
+class State(TypedDict):
+    messages: Annotated[list, add]
+    route: str
+    citations: Annotated[list[str], add]
+
+
+def supervisor(state: State) -> dict:
+    text = state["messages"][-1].content
+    route = "researcher" if "手册" in text or "政策" in text else "support"
+    return {"route": route}
+
+
+def researcher(state: State) -> dict:
+    # 这里换成真实检索；重点是输出 citations
+    return {"citations": ["refund.md"], "messages": [("ai", "检索到退款政策")]}
+
+
+def support(state: State) -> dict:
+    return {"messages": [("ai", "根据资料回答……")]}
+
+
+def route(state: State) -> Literal["researcher", "support"]:
+    return state["route"]  # type: ignore[return-value]
+
+
+builder = StateGraph(State)
+builder.add_node("supervisor", supervisor)
+builder.add_node("researcher", researcher)
+builder.add_node("support", support)
+builder.add_edge(START, "supervisor")
+builder.add_conditional_edges("supervisor", route, ["researcher", "support"])
+builder.add_edge("researcher", "support")
+builder.add_edge("support", END)
+
+graph = builder.compile(checkpointer=InMemorySaver())</pre>
+
+        <h2 id="tools">工具：检索与工单</h2>
+        <p>
+          检索可以做成节点（总是执行）或工具（模型决定是否调用）。
+          知识库问答通常用节点，保证每次回答都有上下文；
+          订单查询用工具，让模型按需调用。工具结果要以 <code>ToolMessage</code> 回到 messages。
+        </p>
+
+        <h2 id="hitl">HITL：写操作先问人</h2>
+        <pre data-lang="python" data-file="approval.py">from langgraph.types import interrupt
+
+
+def approval(state: dict) -> dict:
+    ok = interrupt({"question": "是否创建退款工单？"})
+    return {"messages": [("ai", "已创建" if ok else "已取消")]}</pre>
+        <p>
+          图必须挂 checkpointer；恢复时用同一个 <code>thread_id</code> 调
+          <code>graph.invoke(Command(resume=True), config)</code>。
+          副作用放在 interrupt 之后，避免重入时重复执行。
+        </p>
+
+        <h2 id="memory">记忆：会话与用户偏好</h2>
+        <p>
+          对话历史交给 checkpointer；用户偏好（语气、语言、租户）交给 Store。
+          在 supervisor 之前读一次偏好，写进系统提示或 state，不要每轮都检索。
+        </p>
+
+        <h2 id="stream">流式与前端事件</h2>
+        <p>
+          前端至少需要三类事件：token、节点进度、待确认项。
+          用 <code>stream_mode=["messages", "updates"]</code> 或
+          <code>astream_events</code>，再把 interrupt 事件渲染成确认框。
+          断线重连靠 <code>thread_id</code> + checkpoint，不要重新提交。
+        </p>
+
+        <h2 id="deploy">部署与验收</h2>
+        <ul>
+          <li>checkpointer 用 Postgres；Store 用 PostgresStore。</li>
+          <li>同一 thread 串行，重复提交返回 409 或排队。</li>
+          <li>健康检查覆盖数据库、checkpoint 表与模型连通性。</li>
+          <li>验收：有答案、无答案、需要工具、需要确认、断线恢复、多租户隔离。</li>
+        </ul>
+
+        <h2 id="pitfalls">陷阱与窍门</h2>
+        <div class="callout warn">
+          <span class="ct">先接多 Agent 再补状态</span>
+          <p><strong>你会看到</strong>路由与 state 打架。<strong>因为</strong>状态边界没定。<strong>改成</strong>先单 Agent 跑通，再加 supervisor。</p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">检索节点每次都重跑</span>
+          <p><strong>你会看到</strong>延迟与成本上涨。<strong>因为</strong>工具循环里重复检索。<strong>改成</strong>把检索放在工具循环外，或加缓存。</p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">HITL 恢复换了 thread</span>
+          <p><strong>你会看到</strong>找不到暂停点。<strong>因为</strong>中断按 thread 保存。<strong>改成</strong>恢复使用同一个 config。</p>
+        </div>
+
+        <h2 id="quiz">自检三问</h2>
+        <ol>
+          <li>这个案例里哪些状态必须进 checkpoint，哪些可以放 Store？</li>
+          <li>检索为什么通常做成节点，而不是工具？</li>
+          <li>HITL 的副作用为什么要放在 interrupt 之后？</li>
+        </ol>
+
+        <h2 id="exercise">60 分钟动手练习</h2>
+        <ol>
+          <li>把检索节点换成真实向量库，回答里带来源文件名。</li>
+          <li>加一个订单工具，用 ToolNode 执行，确认工具消息回到模型。</li>
+          <li>给写操作加 interrupt，跑一次拒绝与一次确认。</li>
+          <li>用两个 <code>thread_id</code> 验证会话隔离，用同一用户验证 Store 偏好共享。</li>
+        </ol>
+
+        <h2 id="next">下一步</h2>
+        <p>
+          最后一章 <a href="18-migration.html">18 迁移与选型</a>：
+          把这个案例与 LangChain agents、AgentScope、Spring AI 放在一起比较。
+        </p>
+
+      </article>
+    </main>
+    <script src="../assets/nav.js"></script>
+    <script src="../assets/mini-highlight.js"></script>
+    <script src="../assets/site.js"></script>
+  </body>
+</html>

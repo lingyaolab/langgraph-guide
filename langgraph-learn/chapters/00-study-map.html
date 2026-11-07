@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="LangGraph 1.2.20 学习地图：三条主线、章节依赖、Python 与异步前置、没有 API Key 的学习路径与阅读约定。" />
+    <meta property="og:type" content="article" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:site_name" content="LangGraph 1.2.20 学习站" />
+    <meta property="og:title" content="00 学习地图：怎么用本站 + 前置知识 · LangGraph 1.2.20 学习站" />
+    <meta property="og:description" content="LangGraph 1.2.20 学习地图：三条主线、章节依赖、Python 与异步前置、没有 API Key 的学习路径与阅读约定。" />
+    <title>00 学习地图：怎么用本站 + 前置知识 · LangGraph 1.2.20 学习站</title>
+    <script>
+      try {
+        var t = localStorage.getItem("as-learn-theme");
+        if (!t) t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    </script>
+    <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
+    <link rel="stylesheet" href="../assets/base.css" />
+    <link rel="stylesheet" href="../assets/diagrams.css" />
+  </head>
+  <body data-page="00-study-map" data-root="..">
+    <main>
+      <article class="article">
+
+        <h1>00 · 学习地图：怎么用本站 + 前置知识</h1>
+        <p class="lede">
+          这是一套按「先跑通、再理解、最后避坑」重排的 LangGraph 教程。你不需要先读完官方文档，
+          但需要会写 Python、见过 <code>async/await</code>，并且愿意先照抄再追问为什么。
+        </p>
+
+        <h2 id="why-site">为什么要再造一个文档站</h2>
+        <p>
+          官方文档按 API 组织，适合查；学习时真正卡住你的通常是三件事：
+          这段代码和上一段是什么关系、状态到底在哪一步变了、出错时该看哪一层。
+          这个站按工程落地顺序重写，每个结论都尽量标回 <code>langgraph-1.2.20</code> 的源码。
+        </p>
+
+        <h2 id="three-lines">三条学习主线：同一章读三遍</h2>
+        <div class="compare">
+          <div class="col pick">
+            <h4>① 跟做线</h4>
+            <ul>
+              <li>先看「最小可跑」，照着敲，不追求看懂</li>
+              <li>每段代码都能独立运行，不依赖隐藏片段</li>
+            </ul>
+          </div>
+          <div class="col">
+            <h4>② 理解线</h4>
+            <ul>
+              <li>看「逐行解读 / 端到端」，把一次执行拆成建图、调度、合并、持久化</li>
+              <li>遇到不懂的 API，先看它属于哪一层，再看签名</li>
+            </ul>
+          </div>
+          <div class="col">
+            <h4>③ 避坑线</h4>
+            <ul>
+              <li>看「陷阱与窍门」：你会看到 X → 因为 Y → 改成 Z</li>
+              <li>把报错原文和触发条件记进自己的排障笔记</li>
+            </ul>
+          </div>
+        </div>
+
+        <h2 id="deps">章节依赖图：为什么是这个顺序</h2>
+        <pre data-lang="text" data-file="推荐路线">00 学习地图
+  → 00A 图执行实验室
+  → 01 环境与第一个图
+  → 02 State/Reducer
+  → 03 节点/边/条件路由
+  → 04 Command/Send
+  → 05 Checkpointer
+  → 06 时间旅行
+  → 07 interrupt/HITL
+  → 08 流式
+  → 09 子图
+  → 10 重试/缓存
+  → 11 LangChain 集成
+  → 12 create_react_agent
+  → 13 记忆
+  → 14 多 Agent
+  → 15 测试/观测
+  → 16 部署
+  → 17 综合案例
+  → 18 迁移/选型</pre>
+        <p>
+          前八章是「一张图能跑、能停、能恢复」；中间五章是「把它接进真实模型与工具」；
+          最后五章是「多人协作、上线、收口」。不要跳到 14 章再回头补状态语义，多 Agent 的坑大多在状态边界。
+        </p>
+
+        <h2 id="py-pre">前置知识自查：这些不会会卡在哪</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>能力</th><th>最低要求</th><th>不会会卡在哪</th></tr></thead>
+            <tbody>
+              <tr><td>Python 类型</td><td>会写 <code>TypedDict</code> / <code>dataclass</code></td><td>02 章状态 schema 看不懂</td></tr>
+              <tr><td><code>async/await</code></td><td>知道协程与事件循环</td><td>08 章流式、16 章服务会晕</td></tr>
+              <tr><td>生成器</td><td>见过 <code>yield</code></td><td>节点返回 partial state 时容易误解</td></tr>
+              <tr><td>Pydantic</td><td>会定义模型与校验</td><td>工具参数、结构化输出会卡</td></tr>
+              <tr><td>Docker / SQL</td><td>能起 Postgres</td><td>16 章持久化部署会卡</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="apikey">没有 API Key，能学到哪一步</h2>
+        <p>
+          00A、01、02、03 的前半、05、06、09、10、15 都可以用假模型或纯函数跑通；
+          需要真实模型的主要是 03 的路由实验、04、07、08、11–14、17。把「不需要 key」的章节先做完，
+          再决定要不要申请额度。
+        </p>
+
+        <h2 id="how-read">每一章的固定结构与图例</h2>
+        <ul>
+          <li><strong>读完你能做到</strong>：这一章的验收标准。</li>
+          <li><strong>先说为什么</strong>：不先讲 API，先讲它解决什么问题。</li>
+          <li><strong>最小可跑</strong>：能独立运行的最小代码。</li>
+          <li><strong>逐行解读 / 端到端</strong>：关键行与一次执行的完整链路。</li>
+          <li><strong>陷阱与窍门</strong>：按「现象 → 原因 → 改法」写。</li>
+          <li><strong>自检三问 / 动手练习</strong>：做完再进入下一章。</li>
+        </ul>
+        <p class="src-line">
+          页面上的 <span class="src">文件名:行号</span> 是出处标签，单击复制路径，Ctrl/Cmd + 点击在 GitHub 打开。
+        </p>
+
+        <h2 id="source-truth">事实来源：我怎么保证不编</h2>
+        <p>
+          本站只引用三类来源：<code>libs/langgraph/langgraph/graph/</code>（建图 API）、
+          <code>libs/langgraph/langgraph/pregel/</code> 与 <code>channels/</code>（执行与状态）、
+          <code>libs/prebuilt/</code> 与 <code>libs/checkpoint*/</code>（Agent 与持久化）。
+          版本固定在 <strong>1.2.20</strong>；如果源码与官方文档冲突，以源码为准并在正文标出。
+        </p>
+
+        <h2 id="next">下一步</h2>
+        <p>
+          先花 20 分钟玩一遍 <a href="00a-graph-flow.html">00A 图执行实验室</a>，再进入
+          <a href="01-setup.html">01 环境与第一个图</a>。
+        </p>
+
+      </article>
+    </main>
+    <script src="../assets/nav.js"></script>
+    <script src="../assets/mini-highlight.js"></script>
+    <script src="../assets/site.js"></script>
+  </body>
+</html>

@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="LangGraph 短期记忆与长期 Store 的分工、BaseStore 的 namespace / key、InMemoryStore 与 PostgresStore、跨 thread 的用户偏好。" />
+    <meta property="og:type" content="article" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:site_name" content="LangGraph 1.2.20 学习站" />
+    <meta property="og:title" content="13 记忆：短期状态、长期 Store 与跨会话 · LangGraph 1.2.20 学习站" />
+    <meta property="og:description" content="LangGraph 短期记忆与长期 Store 的分工、BaseStore 的 namespace / key、InMemoryStore 与 PostgresStore、跨 thread 的用户偏好。" />
+    <title>13 记忆：短期状态、长期 Store 与跨会话 · LangGraph 1.2.20 学习站</title>
+    <script>
+      try {
+        var t = localStorage.getItem("as-learn-theme");
+        if (!t) t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    </script>
+    <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
+    <link rel="stylesheet" href="../assets/base.css" />
+    <link rel="stylesheet" href="../assets/diagrams.css" />
+  </head>
+  <body data-page="13-memory" data-root="..">
+    <main>
+      <article class="article">
+
+        <h1>13 · 记忆：短期状态、长期 Store 与跨会话</h1>
+        <p class="lede">
+          checkpointer 记住「这条会话发生过什么」，Store 记住「这个用户是谁」。
+          两者解决不同问题，混用会导致上下文膨胀或偏好丢失。这一章把边界讲清。
+        </p>
+
+        <h2 id="goals">读完你能做到</h2>
+        <ul class="goals">
+          <li>说清短期记忆（State + checkpointer）与长期记忆（Store）的分工</li>
+          <li>用 <code>BaseStore</code> 的 namespace / key 存一个用户偏好</li>
+          <li>在 <code>InMemoryStore</code> 与 <code>PostgresStore</code> 之间选型</li>
+          <li>让同一个用户的不同 thread 共享偏好，但不共享对话历史</li>
+        </ul>
+
+        <h2 id="why">先说为什么：短期靠 state，长期靠 store</h2>
+        <p>
+          把用户偏好塞进 messages，它会随着对话增长被压缩、被裁掉；
+          把整段对话塞进 Store，它会无限膨胀且难以检索。
+          正确的分工是：对话历史留在 State，跨会话事实放 Store。
+        </p>
+
+        <h2 id="minimal">最小可跑：记住用户偏好</h2>
+        <pre data-lang="python" data-file="store.py">from langgraph.graph import END, START, MessagesState, StateGraph
+from langgraph.store.memory import InMemoryStore
+
+
+store = InMemoryStore()
+
+
+def remember(state: MessagesState, config, store) -> dict:
+    user_id = config["configurable"]["user_id"]
+    store.put(("users", user_id), "preference", {"tone": "concise"})
+    return {"messages": [("ai", "记住了：回答尽量简洁。")]}
+
+
+def recall(state: MessagesState, config, store) -> dict:
+    user_id = config["configurable"]["user_id"]
+    item = store.get(("users", user_id), "preference")
+    tone = item.value["tone"] if item else "default"
+    return {"messages": [("ai", f"当前语气：{tone}")]}
+
+
+builder = StateGraph(MessagesState)
+builder.add_node("remember", remember)
+builder.add_node("recall", recall)
+builder.add_edge(START, "remember")
+builder.add_edge("remember", "recall")
+builder.add_edge("recall", END)
+
+graph = builder.compile(store=store)
+config = {"configurable": {"thread_id": "t-1", "user_id": "alice"}}
+graph.invoke({"messages": [("user", "以后回答简洁点")]}, config)
+
+config2 = {"configurable": {"thread_id": "t-2", "user_id": "alice"}}
+print(graph.invoke({"messages": [("user", "我的语气偏好？")]}, config2))</pre>
+        <p>
+          <code>BaseStore</code>
+          <span class="src" data-src="libs/checkpoint/langgraph/store/base/__init__.py:708">base/__init__.py:708</span>
+          的 <code>put</code> / <code>get</code> / <code>search</code> 都以 namespace 元组为第一参数。
+          同一个用户的两个 thread 共享 <code>("users", "alice")</code>，但各自的 messages 仍在自己的 checkpoint 里。
+        </p>
+
+        <h2 id="short">短期记忆：messages 与摘要</h2>
+        <p>
+          短期记忆的最小实现就是 <code>MessagesState</code> + checkpointer。
+          对话变长后，需要压缩：保留最近 N 条，或把旧消息摘要成一条系统消息。
+          压缩是业务策略，不是 checkpointer 自动做的。
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>策略</th><th>做法</th><th>代价</th></tr></thead>
+            <tbody>
+              <tr><td>窗口</td><td>只保留最近 N 条</td><td>丢早期细节</td></tr>
+              <tr><td>摘要</td><td>用模型把旧消息压缩成一段</td><td>多一次模型调用</td></tr>
+              <tr><td>检索</td><td>把历史存 Store，按需检索</td><td>多一层索引与延迟</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="long">长期记忆：namespace、key 与检索</h2>
+        <p>
+          namespace 是逻辑分区，key 是条目名。常见设计：
+          <code>("users", user_id)</code> 存偏好，<code>("facts", tenant_id)</code> 存团队事实。
+          <code>search</code>
+          <span class="src" data-src="libs/checkpoint/langgraph/store/base/__init__.py:784">base/__init__.py:784</span>
+          支持按 namespace 前缀与过滤条件查，适合「找出所有相关偏好」。
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>后端</th><th>适合</th><th>注意</th></tr></thead>
+            <tbody>
+              <tr><td><code>InMemoryStore</code><span class="src" data-src="libs/checkpoint/langgraph/store/memory/__init__.py:136">memory/__init__.py:136</span></td><td>单进程 / 测试</td><td>进程退出即丢</td></tr>
+              <tr><td><code>PostgresStore</code><span class="src" data-src="libs/checkpoint-postgres/langgraph/store/postgres/base.py:668">base.py:668</span></td><td>多副本 / 生产</td><td>要建表，连接池要配</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="pitfalls">陷阱与窍门</h2>
+        <div class="callout warn">
+          <span class="ct">把对话历史写进 Store</span>
+          <p><strong>你会看到</strong>Store 无限增长、检索变慢。<strong>因为</strong>历史应该是 thread 级短期状态。<strong>改成</strong>对话留 State，只把稳定事实写 Store。</p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">Store 的 key 没带租户</span>
+          <p><strong>你会看到</strong>用户 A 读到 B 的偏好。<strong>因为</strong>namespace 少了 tenant/user。<strong>改成</strong>所有 key 都带租户前缀。</p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">以为 Store 会自动注入提示词</span>
+          <p><strong>你会看到</strong>模型不知道偏好。<strong>因为</strong>Store 只是存储，不会自动拼上下文。<strong>改成</strong>在节点里检索并写进 messages。</p>
+        </div>
+
+        <h2 id="quiz">自检三问</h2>
+        <ol>
+          <li>短期记忆与长期记忆分别存在哪里？</li>
+          <li>同一个用户两个 thread，哪些东西共享、哪些不共享？</li>
+          <li>Store 的 namespace 设计为什么要带租户 / 用户？</li>
+        </ol>
+
+        <h2 id="exercise">20 分钟动手练习</h2>
+        <ol>
+          <li>把偏好存进 Store，用一个新 thread 读出来，确认共享。</li>
+          <li>把偏好换成对话历史，观察 Store 增长与上下文膨胀。</li>
+          <li>用 <code>search</code> 按 namespace 前缀列出某个用户的所有条目。</li>
+        </ol>
+
+        <h2 id="next">下一步</h2>
+        <p>
+          下一章 <a href="14-multi-agent.html">14 多 Agent</a>：
+          有了共享状态与长期记忆，多个 Agent 才能安全地协作。
+        </p>
+
+      </article>
+    </main>
+    <script src="../assets/nav.js"></script>
+    <script src="../assets/mini-highlight.js"></script>
+    <script src="../assets/site.js"></script>
+  </body>
+</html>

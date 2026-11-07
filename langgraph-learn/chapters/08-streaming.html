@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="LangGraph stream_mode 的 values / updates / messages / custom / debug 五种模式、astream_events、SSE 桥接与取消。" />
+    <meta property="og:type" content="article" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:site_name" content="LangGraph 1.2.20 学习站" />
+    <meta property="og:title" content="08 流式：stream_mode 与前端事件 · LangGraph 1.2.20 学习站" />
+    <meta property="og:description" content="LangGraph stream_mode 的 values / updates / messages / custom / debug 五种模式、astream_events、SSE 桥接与取消。" />
+    <title>08 流式：stream_mode 与前端事件 · LangGraph 1.2.20 学习站</title>
+    <script>
+      try {
+        var t = localStorage.getItem("as-learn-theme");
+        if (!t) t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    </script>
+    <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
+    <link rel="stylesheet" href="../assets/base.css" />
+    <link rel="stylesheet" href="../assets/diagrams.css" />
+  </head>
+  <body data-page="08-streaming" data-root="..">
+    <main>
+      <article class="article">
+
+        <h1>08 · 流式：stream_mode 与前端事件</h1>
+        <p class="lede">
+          流式不是「把最终结果分块发出去」，而是选择<strong>看哪一层</strong>：
+          每个节点的 state 更新、每条消息的 token、每个任务的开始结束，或你自己的自定义事件。
+          这一章把五种 stream_mode 的语义与前端契约讲清。
+        </p>
+
+        <h2 id="goals">读完你能做到</h2>
+        <ul class="goals">
+          <li>用 <code>stream_mode="values"</code> 看每一步后的完整 state</li>
+          <li>用 <code>"updates"</code> 看节点返回的局部更新，用 <code>"messages"</code> 看 token</li>
+          <li>用 <code>"custom"</code> 从节点内部发自定义事件</li>
+          <li>把流式事件桥接到 SSE，并处理取消与断线</li>
+        </ul>
+
+        <h2 id="why">先说为什么：一次返回和一条事件流</h2>
+        <p>
+          <code>invoke</code> 只给你最终 state，中间发生了什么你看不到。
+          <code>stream</code> 把执行过程拆成事件：前端可以边生成边显示，
+          后端可以在每个节点后做审计，测试可以断言「走过哪条边」。
+        </p>
+
+        <h2 id="minimal">最小可跑：逐 token 打印</h2>
+        <pre data-lang="python" data-file="stream.py">from langgraph.graph import END, START, MessagesState, StateGraph
+
+
+def agent(state: MessagesState) -> dict:
+    return {"messages": [("ai", "这是一个流式回答的示例。")]}
+
+
+builder = StateGraph(MessagesState)
+builder.add_node("agent", agent)
+builder.add_edge(START, "agent")
+builder.add_edge("agent", END)
+graph = builder.compile()
+
+for chunk in graph.stream(
+    {"messages": [("user", "你好")]},
+    stream_mode="messages",
+):
+    message, metadata = chunk
+    print(message.content, end="", flush=True)</pre>
+
+        <h2 id="modes">五种 stream_mode 各看什么</h2>
+        <p>
+          <code>StreamMode</code>
+          <span class="src" data-src="libs/langgraph/langgraph/types.py:132">types.py:132</span>
+          在 1.2.20 里包含 <code>values</code>、<code>updates</code>、<code>checkpoints</code>、
+          <code>tasks</code>、<code>debug</code>、<code>messages</code>、<code>custom</code> 七种；
+          最常用的是前五种。
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>mode</th><th>每个事件是什么</th><th>适合</th></tr></thead>
+            <tbody>
+              <tr><td><code>values</code></td><td>一步结束后的完整 state</td><td>调试、前端整块刷新</td></tr>
+              <tr><td><code>updates</code></td><td>节点名 + 该节点返回的局部更新</td><td>显示「谁改了什么」</td></tr>
+              <tr><td><code>messages</code></td><td>模型 token + 元数据</td><td>聊天逐字输出</td></tr>
+              <tr><td><code>custom</code></td><td>节点内 <code>StreamWriter</code> 写出的任意数据</td><td>进度、引用、业务事件</td></tr>
+              <tr><td><code>checkpoints</code></td><td>每次 checkpoint 创建事件</td><td>持久化调试</td></tr>
+              <tr><td><code>tasks</code></td><td>任务开始 / 结束 / 错误</td><td>并行任务监控</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          流式入口是 <code>Pregel.stream</code>
+          <span class="src" data-src="libs/langgraph/langgraph/pregel/main.py:2705">main.py:2705</span>，
+          异步版是 <code>astream</code>
+          <span class="src" data-src="libs/langgraph/langgraph/pregel/main.py:3117">main.py:3117</span>。
+          多个 mode 可以同时传，事件会带上 mode 标记。
+        </p>
+
+        <h2 id="events">astream_events 与前端契约</h2>
+        <p>
+          需要更细的「链 / 模型 / 工具」级事件时，用 <code>astream_events</code>
+          <span class="src" data-src="libs/langgraph/langgraph/pregel/main.py:3813">main.py:3813</span>。
+          它适合做统一事件总线，但事件更多、体积更大；前端要先约定只消费哪几类。
+        </p>
+        <pre data-lang="python" data-file="sse.py">async def sse(graph, payload, config):
+    async for event in graph.astream_events(payload, config, version="v2"):
+        kind = event["event"]
+        if kind == "on_chat_model_stream":
+            text = event["data"]["chunk"].content
+            if text:
+                yield f"data: {json.dumps({'type': 'token', 'text': text})}\n\n"
+        elif kind == "on_chain_end":
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"</pre>
+        <div class="callout tip">
+          <span class="ct">先定事件契约，再选 mode</span>
+          <p>
+            前端只需要 token 就选 <code>messages</code>；要显示节点进度就加 <code>updates</code>；
+            要业务引用 / 进度条就用 <code>custom</code>。不要把所有事件原样丢给前端。
+          </p>
+        </div>
+
+        <h2 id="cancel">取消、超时与断线</h2>
+        <ul>
+          <li>客户端断开时，服务端要取消流，否则模型调用会继续烧 token。</li>
+          <li>同步 <code>stream</code> 的生成器关闭会触发取消；异步版用 <code>aclose()</code> 或任务取消。</li>
+          <li>超时是业务层的<strong>总时长</strong>，不是「多久没有下一个 chunk」；两者要分开设。</li>
+          <li>断线重连靠 <code>thread_id</code> + checkpoint，不是靠把已发事件缓存住。</li>
+        </ul>
+
+        <h2 id="pitfalls">陷阱与窍门</h2>
+        <div class="callout warn">
+          <span class="ct">把 values 当成增量</span>
+          <p><strong>你会看到</strong>前端每次都收到完整 state，重复渲染。<strong>因为</strong><code>values</code> 是快照不是 diff。<strong>改成</strong>用 <code>updates</code> 或在前端做 diff。</p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">messages 模式没有模型调用</span>
+          <p><strong>你会看到</strong>一个 token 都没有。<strong>因为</strong>节点没有真实模型，或模型没走 LangChain 接口。<strong>改成</strong>确认模型调用在节点内，并用 LangChain chat model。</p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">断线后重新调用 invoke</span>
+          <p><strong>你会看到</strong>同一会话重复执行。<strong>因为</strong>断线不是失败，checkpoint 还在。<strong>改成</strong>用同一个 thread 重新订阅，或从 <code>get_state</code> 继续。</p>
+        </div>
+
+        <h2 id="quiz">自检三问</h2>
+        <ol>
+          <li><code>values</code> 与 <code>updates</code> 的区别是什么？</li>
+          <li>什么时候用 <code>custom</code>，而不是把所有东西塞进 state？</li>
+          <li>断线重连应该依赖什么？为什么不是重新 invoke？</li>
+        </ol>
+
+        <h2 id="exercise">20 分钟动手练习</h2>
+        <ol>
+          <li>分别用 <code>values</code> 与 <code>updates</code> 跑同一张图，打印事件数量差异。</li>
+          <li>在节点里用 <code>StreamWriter</code> 发一个 <code>{"progress": 0.5}</code>，用 <code>custom</code> 消费。</li>
+          <li>把 <code>messages</code> 事件桥成 SSE 字符串，确认前端能按 token 拼接。</li>
+        </ol>
+
+        <h2 id="next">下一步</h2>
+        <p>
+          下一章 <a href="09-subgraph.html">09 子图与模块化</a>：
+          流式事件会带命名空间，理解命名空间之前，先把图拆成可复用的子图。
+        </p>
+
+      </article>
+    </main>
+    <script src="../assets/nav.js"></script>
+    <script src="../assets/mini-highlight.js"></script>
+    <script src="../assets/site.js"></script>
+  </body>
+</html>

@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="LangGraph 常见错误：图编译、状态 schema、无效边、递归上限、checkpoint 缺失、interrupt 恢复、工具调用与部署。" />
+    <meta property="og:type" content="article" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:site_name" content="LangGraph 1.2.20 学习站" />
+    <meta property="og:title" content="B 报错速查：看到 X → 因为 Y → 改成 Z · LangGraph 1.2.20 学习站" />
+    <meta property="og:description" content="LangGraph 常见错误：图编译、状态 schema、无效边、递归上限、checkpoint 缺失、interrupt 恢复、工具调用与部署。" />
+    <title>B 报错速查：看到 X → 因为 Y → 改成 Z · LangGraph 1.2.20 学习站</title>
+    <script>
+      try {
+        var t = localStorage.getItem("as-learn-theme");
+        if (!t) t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    </script>
+    <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
+    <link rel="stylesheet" href="../assets/base.css" />
+    <link rel="stylesheet" href="../assets/diagrams.css" />
+  </head>
+  <body data-page="errors" data-root="..">
+    <main>
+      <article class="article">
+
+        <h1>附录 B · 报错速查</h1>
+        <p class="lede">
+          这一页按「现象 → 原因 → 改法」组织。先看错误文本属于哪一层，
+          再去对应章节补背景；不要靠改提示词碰运气。
+        </p>
+
+        <h2 id="how">怎么用</h2>
+        <ul>
+          <li>先定位层：建图、状态、运行时、持久化、工具、部署。</li>
+          <li>再看错误文本里有没有类名或字段名，直接搜本页。</li>
+          <li>最后回到章节的最小例子复现，确认改法真的生效。</li>
+        </ul>
+
+        <h2 id="compile">编译与图结构</h2>
+        <div class="callout warn">
+          <span class="ct"><code>StateGraph object is not callable</code></span>
+          <p><strong>因为</strong>你还没 <code>compile()</code>。<strong>改成</strong>先编译，再 <code>invoke</code>。</p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">节点不存在 / 无效边</span>
+          <p><strong>因为</strong><code>add_edge</code> 或条件边指向了未注册的名字。<strong>改成</strong>核对 <code>add_node</code> 的名字与路径映射。</p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">图没有出口</span>
+          <p><strong>因为</strong>最后一条边没连到 <code>END</code>。<strong>改成</strong>给终止节点加 <code>add_edge("last", END)</code>。</p>
+        </div>
+
+        <h2 id="state">状态与 reducer</h2>
+        <div class="callout warn">
+          <span class="ct"><code>InvalidUpdateError</code></span>
+          <p><strong>你会看到</strong><span class="src" data-src="libs/langgraph/langgraph/errors.py:92">errors.py:92</span>。<strong>因为</strong>同一 superstep 多个节点写了同一个没有 reducer 的字段。<strong>改成</strong>加 reducer，或让节点写不同字段。</p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">消息只剩最后一条</span>
+          <p><strong>因为</strong>字段没有声明 <code>add_messages</code>，默认覆盖。<strong>改成</strong>继承 <code>MessagesState</code> 或手写 <code>Annotated[list, add_messages]</code>。</p>
+        </div>
+        <div class="callout warn">
+          <span class="ct"><code>EmptyInputError</code></span>
+          <p><strong>你会看到</strong><span class="src" data-src="libs/langgraph/langgraph/errors.py:138">errors.py:138</span>。<strong>因为</strong>输入为空或不满足 schema。<strong>改成</strong>传入至少一个 State 字段，并检查必填字段。</p>
+        </div>
+
+        <h2 id="runtime">运行时与持久化</h2>
+        <div class="callout warn">
+          <span class="ct"><code>GraphRecursionError</code></span>
+          <p><strong>你会看到</strong><span class="src" data-src="libs/langgraph/langgraph/errors.py:69">errors.py:69</span>。<strong>因为</strong>循环没有业务停止条件，撞到递归上限。<strong>改成</strong>在路由函数里加计数 / 完成判定，并把上限当兜底。</p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">恢复时报缺少 checkpointer</span>
+          <p><strong>你会看到</strong><code>Cannot use Command(resume=...) without checkpointer</code> <span class="src" data-src="libs/langgraph/langgraph/pregel/_loop.py:1026">_loop.py:1026</span>。<strong>因为</strong>中断状态没地方存。<strong>改成</strong>编译时挂 <code>checkpointer</code>。</p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">多轮对话不记得上一次</span>
+          <p><strong>因为</strong>没有传同一个 <code>thread_id</code>。<strong>改成</strong>所有调用都带 <code>{"configurable": {"thread_id": ...}}</code>。</p>
+        </div>
+        <div class="callout warn">
+          <span class="ct"><code>GraphInterrupt</code></span>
+          <p><strong>你会看到</strong><span class="src" data-src="libs/langgraph/langgraph/errors.py:104">errors.py:104</span>。<strong>因为</strong>这是 interrupt 的内部冒泡，不是业务失败。<strong>改成</strong>不要捕获它当异常；按暂停流程处理，用 <code>Command(resume=...)</code> 恢复。</p>
+        </div>
+
+        <h2 id="tool">工具与模型</h2>
+        <div class="callout warn">
+          <span class="ct">模型不调用工具</span>
+          <p><strong>因为</strong>没有 <code>bind_tools</code>，或工具描述太含糊。<strong>改成</strong>绑定工具 schema，并把描述写清输入 / 输出 / 场景。</p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">工具结果模型看不到</span>
+          <p><strong>因为</strong>结果没写回 <code>messages</code>，而是放进了自定义字段。<strong>改成</strong>用 <code>ToolMessage</code> 追加到 messages。</p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">工具异常导致整图失败</span>
+          <p><strong>因为</strong>异常直接冒泡。<strong>改成</strong>在工具内捕获并返回可读错误文本，或按业务决定是否重试。</p>
+        </div>
+
+        <h2 id="deploy">部署</h2>
+        <div class="callout warn">
+          <span class="ct"><code>langgraph dev</code> 能跑，生产不行</span>
+          <p><strong>因为</strong>dev 是本地模式，没有持久化与鉴权。<strong>改成</strong>用 <code>langgraph up</code> 或自建 FastAPI + Postgres。</p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">多副本历史丢失</span>
+          <p><strong>因为</strong>用了 <code>InMemorySaver</code>。<strong>改成</strong>Postgres checkpointer / store。</p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">同一 thread 重复执行</span>
+          <p><strong>因为</strong>没有会话级串行。<strong>改成</strong>加锁 / 队列 / 409，或让前端复用同一个订阅。</p>
+        </div>
+
+        <h2 id="next">下一步</h2>
+        <p>看 <a href="api-cheatsheet.html">附录 C API 速查</a> 核对签名，或回到 <a href="../chapters/00-study-map.html">00 学习地图</a>。</p>
+
+      </article>
+    </main>
+    <script src="../assets/nav.js"></script>
+    <script src="../assets/mini-highlight.js"></script>
+    <script src="../assets/site.js"></script>
+  </body>
+</html>

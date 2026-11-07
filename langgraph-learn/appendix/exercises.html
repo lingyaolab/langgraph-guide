@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="LangGraph 1.2.20 教程各章动手练习的参考实现与检查点：State、路由、Command/Send、checkpoint、时间旅行、HITL、流式、子图、工具、Agent、记忆、多 Agent、测试与部署。" />
+    <meta property="og:type" content="article" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:site_name" content="LangGraph 1.2.20 学习站" />
+    <meta property="og:title" content="E 动手练习答案：每章做完怎么对照 · LangGraph 1.2.20 学习站" />
+    <meta property="og:description" content="各章练习的参考实现与检查点。" />
+    <title>E 动手练习答案：每章做完怎么对照 · LangGraph 1.2.20 学习站</title>
+    <script>
+      try {
+        var t = localStorage.getItem("as-learn-theme");
+        if (!t) t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    </script>
+    <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
+    <link rel="stylesheet" href="../assets/base.css" />
+    <link rel="stylesheet" href="../assets/diagrams.css" />
+  </head>
+  <body data-page="exercises" data-root="..">
+    <main>
+      <article class="article">
+
+        <h1>附录 E · 动手练习答案</h1>
+        <p class="lede">
+          这不是唯一答案，而是「参考做法 + 检查点」。同一道练习可以有不同的实现，
+          重点是你能不能解释每一步为什么这样做、失败时该看哪里。建议先自己写，再对照。
+        </p>
+
+        <h2 id="how">怎么用这份答案</h2>
+        <ul class="goals">
+          <li>先跑通自己的版本，再对照参考做法，不要直接抄。</li>
+          <li>重点看「检查点」：它们比代码更能说明你有没有理解。</li>
+          <li>如果代码能跑但检查点答不上来，回到对应章节重读。</li>
+        </ul>
+
+        <h2 id="ch01-03">第 01–03 章：环境、状态与路由</h2>
+        <p>
+          01 的三个练习都在验证「图对象不是函数」：编译前后、第二次调用是否记得、删掉 END 的报错。
+          02 的重点是 reducer 语义，03 的重点是条件边的路径映射。
+        </p>
+        <pre data-lang="python" data-file="02 的累加状态">from operator import add
+from typing import Annotated, TypedDict
+
+class State(TypedDict):
+    total: Annotated[int, add]
+
+def add_one(state: State) -> dict:
+    return {"total": 1}</pre>
+        <p><strong>检查点：</strong></p>
+        <ul>
+          <li>没有 <code>compile()</code> 的 <code>StateGraph</code> 不可调用；编译后才是执行器。</li>
+          <li>节点返回 partial state；返回完整 state 会把没改的字段也写一遍。</li>
+          <li>两次 <code>invoke</code> 默认不共享状态；要共享得挂 checkpointer。</li>
+          <li><code>Annotated[int, add]</code> 让两个节点各加 1 得到 2；删掉 <code>Annotated</code> 只会剩最后一个值。</li>
+          <li><code>add_messages</code> 按消息 id 去重追加，不自动裁剪长度。</li>
+          <li>并行节点写同一个无 reducer 字段会抛 <code>InvalidUpdateError</code>。</li>
+          <li>条件边返回的是「路径 key」，映射表把它翻译成节点名；不写映射时返回值必须等于节点名。</li>
+          <li>循环的停止条件要写进路由函数，递归上限只是兜底。</li>
+        </ul>
+
+        <h2 id="ch04-06">第 04–06 章：Command/Send、checkpoint 与时间旅行</h2>
+        <p>
+          04 的 Command 练习把「改 state」和「跳转」合并成一个返回值；
+          Send 练习的重点是 fan-out 的每个实例只拿到自己的 payload。
+        </p>
+        <pre data-lang="python" data-file="Command 同时改状态与路由">from langgraph.types import Command
+
+def triage(state: dict) -> Command:
+    route = "billing" if "退款" in state["question"] else "general"
+    return Command(update={"route": route, "confidence": 0.9}, goto=route)</pre>
+        <p><strong>检查点：</strong></p>
+        <ul>
+          <li><code>Command(update=..., goto=...)</code> 不需要再给该节点加条件边。</li>
+          <li><code>Send</code> 的 payload 是该实例的初始输入，不是父图全局 state。</li>
+          <li>并行结果的合并顺序不保证；要稳定顺序就在结果里带序号，最后排序。</li>
+          <li>checkpoint 在每个 superstep 之后写入；不是只在 <code>invoke</code> 结束时写。</li>
+          <li>同一个 <code>thread_id</code> 才能读回历史；换 id 就是新会话。</li>
+          <li><code>InMemorySaver</code> 不能跨进程；本地持久化用 SQLite，多副本用 Postgres。</li>
+          <li><code>get_state_history</code> 返回从新到旧的历史；每个快照有自己的 <code>checkpoint_id</code>。</li>
+          <li><code>update_state</code> 只写新 checkpoint，不会自动继续执行；要再 <code>invoke(None, config)</code>。</li>
+          <li>时间旅行只回滚图内状态，不自动回滚外部副作用。</li>
+        </ul>
+
+        <h2 id="ch07-09">第 07–09 章：HITL、流式与子图</h2>
+        <p>
+          07 的核心是「interrupt 会重新进入节点」：interrupt 之前的代码会再跑一遍，
+          副作用必须放到 interrupt 之后或做幂等。
+        </p>
+        <pre data-lang="python" data-file="暂停与恢复">from langgraph.types import Command, interrupt
+
+def ask(state: dict) -> dict:
+    ok = interrupt({"question": "是否继续？"})
+    return {"approved": bool(ok)}
+
+# 恢复：同一个 thread_id
+graph.invoke(Command(resume=True), config)</pre>
+        <p><strong>检查点：</strong></p>
+        <ul>
+          <li>interrupt 不是抛异常；它保存 checkpoint 并让整张图暂停。</li>
+          <li>恢复时节点重新进入，interrupt 直接返回 resume 值。</li>
+          <li>没有 checkpointer 就无法恢复；会报 <code>Cannot use Command(resume=...) without checkpointer</code>。</li>
+          <li>多个中断同时挂起时，前端至少要保存 thread_id、中断 id 与 payload。</li>
+          <li><code>values</code> 是完整 state 快照，<code>updates</code> 是节点局部更新；前端别把 values 当增量。</li>
+          <li><code>messages</code> 只对 LangChain chat model 的调用产生 token 事件。</li>
+          <li>断线重连靠 thread_id + checkpoint，不是重新 invoke。</li>
+          <li>编译后的子图可以直接当节点；父子图 schema 不兼容时用显式映射。</li>
+          <li>子图事件带命名空间，调试时先看命名空间定位层级。</li>
+        </ul>
+
+        <h2 id="ch10-12">第 10–12 章：重试、LangChain 集成与预构建 Agent</h2>
+        <p>
+          10 的重试只该覆盖可重试错误；写操作节点重试前必须确认幂等。
+          11 的核心是 <code>bind_tools</code> → <code>ToolNode</code> → <code>ToolMessage</code> 这条闭环。
+        </p>
+        <pre data-lang="python" data-file="工具循环">builder.add_node("agent", agent)
+builder.add_node("tools", ToolNode([get_weather]))
+builder.add_edge(START, "agent")
+builder.add_conditional_edges("agent", tools_condition)
+builder.add_edge("tools", "agent")</pre>
+        <p><strong>检查点：</strong></p>
+        <ul>
+          <li><code>RetryPolicy.max_attempts=3</code> 是「包含首次」的尝试次数，不是额外重试 3 次。</li>
+          <li>401 / 403 / 404 不该重试；429 / 5xx / 网络错误才值得退避。</li>
+          <li>带副作用的节点不能缓存；缓存键要带租户 / 用户。</li>
+          <li>递归上限是兜底，不是业务停止条件。</li>
+          <li><code>bind_tools</code> 只把 schema 告诉模型，不执行工具。</li>
+          <li><code>ToolNode</code> 执行 <code>tool_calls</code>，把结果写成带 <code>tool_call_id</code> 的 <code>ToolMessage</code>。</li>
+          <li><code>tools_condition</code> 默认路由到 <code>"tools"</code> 或 <code>END</code>；节点名不一致时要自定义映射。</li>
+          <li>工具异常默认冒泡；要让模型看到错误就捕获并返回可读文本。</li>
+          <li><code>create_react_agent</code> 内部就是模型节点 + ToolNode + 条件边；1.2.20 为维护模式。</li>
+          <li>需要自定义状态、路由、HITL 时，显式搭图比继续加 prebuilt 参数更清楚。</li>
+        </ul>
+
+        <h2 id="ch13-15">第 13–15 章：记忆、多 Agent 与测试</h2>
+        <p>
+          13 先分清短期与长期：对话历史在 State，用户偏好在 Store。
+          14 先确认多 Agent 是职责隔离，不是并行加速。
+        </p>
+        <pre data-lang="python" data-file="Store 的 namespace">store.put(("users", user_id), "preference", {"tone": "concise"})
+item = store.get(("users", user_id), "preference")</pre>
+        <p><strong>检查点：</strong></p>
+        <ul>
+          <li>短期记忆 = State + checkpointer；长期记忆 = Store。</li>
+          <li>同一用户不同 thread 共享 Store，但不共享 messages。</li>
+          <li>Store 不会自动注入提示词；要在节点里检索并写进 messages。</li>
+          <li>Store 的 namespace 必须带租户 / 用户，否则会串数据。</li>
+          <li>Supervisor 一直掌握控制权；handoff 把控制权转给另一个 Agent。</li>
+          <li>多 Agent 共享全部 messages 会让上下文膨胀、角色混淆。</li>
+          <li>handoff 必须有最大轮次或完成判定，否则会互相踢皮球。</li>
+          <li>单测用假模型，断言 state / 路径 / 工具调用次数，而不是自然语言。</li>
+          <li>trace 里先看走了哪条边，再看哪个节点慢，最后看 token。</li>
+        </ul>
+
+        <h2 id="ch16-18">第 16–18 章：部署、综合案例与选型</h2>
+        <p>
+          16 先跑 <code>langgraph dev</code>，再换 Postgres，最后才谈多副本。
+          17 按「最小闭环 → 检索 → 工具 → HITL → 多 Agent」逐层加。
+        </p>
+        <pre data-lang="json" data-file="langgraph.json">{
+  "dependencies": ["."],
+  "graphs": {"agent": "./agent.py:graph"},
+  "env": ".env"
+}</pre>
+        <p><strong>检查点：</strong></p>
+        <ul>
+          <li><code>langgraph.json</code> 的 <code>graphs</code> 值是 <code>文件:变量</code>。</li>
+          <li><code>dev</code> 是本地开发模式；生产用 <code>up</code> 或自建 FastAPI。</li>
+          <li>多副本必须共享 checkpointer / store；同一 thread 要串行。</li>
+          <li>liveness 看进程，readiness 看依赖；两者分开。</li>
+          <li>综合案例先跑「问 → 答 → 可恢复」，再加检索与工具。</li>
+          <li>检索通常做成节点，保证每次回答都有上下文；订单查询做成工具，按需调用。</li>
+          <li>HITL 的副作用放在 interrupt 之后，避免重入重复执行。</li>
+          <li>选型先问「是否需要恢复与暂停」；不需要时一个函数可能更简单。</li>
+          <li>0.x 升 1.x 先核对包版本、prebuilt 定位、checkpoint / store 接口与流式事件形状。</li>
+        </ul>
+
+        <h2 id="next">下一步</h2>
+        <p>
+          做完练习后，回到 <a href="../chapters/00-study-map.html">00 学习地图</a>
+          选一条主线做自己的项目；或者从 <a href="../chapters/17-capstone.html">17 综合案例</a>
+          开始，把 Atlas 换成你的业务。
+        </p>
+
+      </article>
+    </main>
+    <script src="../assets/nav.js"></script>
+    <script src="../assets/mini-highlight.js"></script>
+    <script src="../assets/site.js"></script>
+  </body>
+</html>

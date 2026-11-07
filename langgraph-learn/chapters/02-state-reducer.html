@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="LangGraph State 的三种 schema、Annotated reducer、add_messages、覆盖与追加的语义，以及 InvalidUpdateError 的触发条件。" />
+    <meta property="og:type" content="article" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:site_name" content="LangGraph 1.2.20 学习站" />
+    <meta property="og:title" content="02 State、Schema 与 Reducer：状态不是一个大字典 · LangGraph 1.2.20 学习站" />
+    <meta property="og:description" content="LangGraph State 的三种 schema、Annotated reducer、add_messages、覆盖与追加的语义，以及 InvalidUpdateError 的触发条件。" />
+    <title>02 State、Schema 与 Reducer：状态不是一个大字典 · LangGraph 1.2.20 学习站</title>
+    <script>
+      try {
+        var t = localStorage.getItem("as-learn-theme");
+        if (!t) t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    </script>
+    <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
+    <link rel="stylesheet" href="../assets/base.css" />
+    <link rel="stylesheet" href="../assets/diagrams.css" />
+  </head>
+  <body data-page="02-state-reducer" data-root="..">
+    <main>
+      <article class="article">
+
+        <h1>02 · State、Schema 与 Reducer：状态不是一个大字典</h1>
+        <p class="lede">
+          图里最容易被低估的是「状态怎么更新」。同一个字段，默认是覆盖、追加还是自定义合并，
+          决定了并行节点会不会互相踩、消息会不会丢。这一章把语义写进类型。
+        </p>
+
+        <h2 id="goals">读完你能做到</h2>
+        <ul class="goals">
+          <li>用 <code>TypedDict</code> / <code>dataclass</code> / Pydantic 定义 State，并知道何时选哪种</li>
+          <li>用 <code>Annotated[..., reducer]</code> 声明字段的合并方式</li>
+          <li>说清默认覆盖、<code>add_messages</code> 追加、以及自定义 reducer 的差异</li>
+          <li>看懂 <code>InvalidUpdateError</code> 与「并行节点写同一字段」的关系</li>
+        </ul>
+
+        <h2 id="why">先说为什么：状态更新的语义要写进类型</h2>
+        <p>
+          如果状态只是一个普通 dict，你永远不知道某个字段是「覆盖」还是「追加」；
+          两个并行节点同时返回 <code>{"items": [...]}</code> 时，谁赢也没有定义。
+          LangGraph 把这件事变成 schema 的一部分：字段类型上写 reducer，执行器按它合并。
+        </p>
+
+        <h2 id="minimal">最小可跑：一个会累加的字段</h2>
+        <pre data-lang="python" data-file="reducer.py">from operator import add
+from typing import Annotated, TypedDict
+
+from langgraph.graph import END, START, StateGraph
+
+
+class State(TypedDict):
+    total: Annotated[int, add]
+
+
+def add_one(state: State) -> dict:
+    return {"total": 1}
+
+
+builder = StateGraph(State)
+builder.add_node("add_one", add_one)
+builder.add_edge(START, "add_one")
+builder.add_edge("add_one", END)
+graph = builder.compile()
+
+print(graph.invoke({"total": 0}))   # {'total': 1}</pre>
+        <p>
+          把 <code>add</code> 换掉，语义就变了；把 <code>Annotated</code> 去掉，
+          第二次执行会覆盖而不是累加。状态字段的「怎么合并」不是运行时选项，而是类型声明。
+        </p>
+
+        <h2 id="schema">Schema 的三种写法与选择</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>写法</th><th>适合</th><th>注意</th></tr></thead>
+            <tbody>
+              <tr><td><code>TypedDict</code></td><td>大多数图状态</td><td>轻量、无运行时校验</td></tr>
+              <tr><td><code>dataclass</code></td><td>想要默认值与类型提示</td><td>字段默认值要小心可变对象</td></tr>
+              <tr><td>Pydantic <code>BaseModel</code></td><td>需要运行时校验</td><td>与 LangChain 消息混用时注意序列化</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="reducer">Reducer：覆盖、追加与自定义</h2>
+        <p>
+          默认行为是<strong>覆盖</strong>：节点返回什么，字段就变成什么。
+          声明 <code>Annotated[T, reducer]</code> 后，旧值与新值会交给 reducer 合并。
+          消息字段用框架提供的 <code>add_messages</code>
+          <span class="src" data-src="libs/langgraph/langgraph/graph/message.py:64">message.py:64</span>，
+          它会按消息 id 去重、追加并处理 <code>RemoveMessage</code>。
+        </p>
+        <pre data-lang="python" data-file="消息状态">from langgraph.graph import MessagesState
+
+
+class State(MessagesState):
+    # 额外字段照常声明
+    user_id: str</pre>
+        <p>
+          <code>MessagesState</code>
+          <span class="src" data-src="libs/langgraph/langgraph/graph/message.py:310">message.py:310</span>
+          只是预置了 <code>messages: Annotated[list, add_messages]</code> 的 TypedDict；
+          你仍然可以继承它加字段。
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>内置 channel</th><th>语义</th><th>典型用途</th></tr></thead>
+            <tbody>
+              <tr><td><code>LastValue</code><span class="src" data-src="libs/langgraph/langgraph/channels/last_value.py:20">last_value.py:20</span></td><td>只保留最后一个值</td><td>普通标量字段</td></tr>
+              <tr><td><code>Topic</code><span class="src" data-src="libs/langgraph/langgraph/channels/topic.py:23">topic.py:23</span></td><td>可累积的 pub-sub</td><td>多路事件</td></tr>
+              <tr><td><code>BinaryOperatorAggregate</code><span class="src" data-src="libs/langgraph/langgraph/channels/binop.py:66">binop.py:66</span></td><td>二元操作合并</td><td><code>add</code>、<code>max</code></td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="messages">add_messages 到底做了什么</h2>
+        <ul>
+          <li>把新消息追加到列表末尾。</li>
+          <li>按消息 <code>id</code> 去重：同 id 的新消息会替换旧消息。</li>
+          <li>识别 <code>RemoveMessage</code>，从列表里删掉指定 id。</li>
+          <li>不负责裁剪长度；窗口裁减要自己写 reducer 或节点。</li>
+        </ul>
+
+        <h2 id="pitfalls">陷阱与窍门</h2>
+        <div class="callout warn">
+          <span class="ct">并行节点写同一个非 reducer 字段</span>
+          <p><strong>你会看到</strong> <code>InvalidUpdateError</code><span class="src" data-src="libs/langgraph/langgraph/errors.py:92">errors.py:92</span>。<strong>因为</strong>同一 superstep 里两个节点都更新了 <code>LastValue</code>，执行器不知道谁赢。<strong>改成</strong>给字段加 reducer，或让两个节点写不同字段。</p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">把消息列表当普通 list</span>
+          <p><strong>你会看到</strong>历史消息被覆盖，只剩最后一条。<strong>因为</strong>字段没有声明 <code>add_messages</code>。<strong>改成</strong>继承 <code>MessagesState</code> 或手写 <code>Annotated[list, add_messages]</code>。</p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">reducer 有副作用</span>
+          <p><strong>你会看到</strong>重放或并行时结果不稳定。<strong>因为</strong>reducer 可能被多次调用。<strong>改成</strong>保持纯函数，不要在里面写数据库。</p>
+        </div>
+
+        <h2 id="quiz">自检三问</h2>
+        <ol>
+          <li>默认 reducer 是什么？为什么并行写同一字段会报错？</li>
+          <li><code>add_messages</code> 的去重键是什么？它会不会自动裁剪长度？</li>
+          <li>什么情况下应该自定义 reducer，而不是在节点里手动读写列表？</li>
+        </ol>
+
+        <h2 id="exercise">20 分钟动手练习</h2>
+        <ol>
+          <li>把 <code>total</code> 改成列表，用 <code>operator.add</code> 合并两个节点各自的列表，观察结果。</li>
+          <li>用 <code>MessagesState</code> 建一张图，两个节点各追加一条消息，确认两条都在。</li>
+          <li>删掉 <code>Annotated</code>，让两个并行节点写同一个字段，复现 <code>InvalidUpdateError</code>。</li>
+        </ol>
+
+        <h2 id="next">下一步</h2>
+        <p>
+          下一章 <a href="03-nodes-edges.html">03 节点、边与条件路由</a>：
+          状态有了语义，接下来让图自己决定下一步走哪条边。
+        </p>
+
+      </article>
+    </main>
+    <script src="../assets/nav.js"></script>
+    <script src="../assets/mini-highlight.js"></script>
+    <script src="../assets/site.js"></script>
+  </body>
+</html>

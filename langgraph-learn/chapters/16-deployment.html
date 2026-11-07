@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="LangGraph langgraph.json、langgraph dev / up、Postgres checkpointer 与 store、多副本、队列、超时与健康检查。" />
+    <meta property="og:type" content="article" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:site_name" content="LangGraph 1.2.20 学习站" />
+    <meta property="og:title" content="16 部署与生产：API Server、Postgres 与水平扩展 · LangGraph 1.2.20 学习站" />
+    <meta property="og:description" content="LangGraph langgraph.json、langgraph dev / up、Postgres checkpointer 与 store、多副本、队列、超时与健康检查。" />
+    <title>16 部署与生产：API Server、Postgres 与水平扩展 · LangGraph 1.2.20 学习站</title>
+    <script>
+      try {
+        var t = localStorage.getItem("as-learn-theme");
+        if (!t) t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    </script>
+    <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
+    <link rel="stylesheet" href="../assets/base.css" />
+    <link rel="stylesheet" href="../assets/diagrams.css" />
+  </head>
+  <body data-page="16-deployment" data-root="..">
+    <main>
+      <article class="article">
+
+        <h1>16 · 部署与生产：API Server、Postgres 与水平扩展</h1>
+        <p class="lede">
+          本地 <code>graph.invoke</code> 和生产服务之间，差的不是一条命令，
+          而是持久化、并发、超时、鉴权与可观测。这一章按「先起服务，再换存储，最后扩副本」推进。
+        </p>
+
+        <h2 id="goals">读完你能做到</h2>
+        <ul class="goals">
+          <li>用 <code>langgraph.json</code> 声明图与依赖，跑 <code>langgraph dev</code></li>
+          <li>把 checkpointer / store 换成 Postgres，理解为什么要先 <code>setup()</code></li>
+          <li>说清多副本下哪些状态必须共享、哪些必须单例</li>
+          <li>给服务加健康检查、超时与基本鉴权</li>
+        </ul>
+
+        <h2 id="why">先说为什么：图和进程要分开看</h2>
+        <p>
+          图是逻辑，进程是运行环境。你可以把一个图跑在 CLI、FastAPI、LangGraph Server 或队列 worker 里。
+          生产化的核心不是「换框架」，而是让图的 checkpoint、store、并发与部署形态解耦。
+        </p>
+
+        <h2 id="minimal">最小可跑：langgraph dev 起服务</h2>
+        <pre data-lang="json" data-file="langgraph.json">{
+  "dependencies": ["."],
+  "graphs": {
+    "agent": "./agent.py:graph"
+  },
+  "env": ".env"
+}</pre>
+        <pre data-lang="bash" data-file="启动">pip install "langgraph-cli[inmem]"
+langgraph dev</pre>
+        <p>
+          CLI 会读取 <code>langgraph.json</code>，把 <code>graph</code> 暴露成 API。
+          <code>dev</code> 入口在
+          <span class="src" data-src="libs/cli/langgraph_cli/cli.py:763">cli.py:763</span>，
+          生产用的 <code>up</code> 在
+          <span class="src" data-src="libs/cli/langgraph_cli/cli.py:278">cli.py:278</span>。
+        </p>
+
+        <h2 id="config">langgraph.json 与依赖</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>字段</th><th>作用</th><th>注意</th></tr></thead>
+            <tbody>
+              <tr><td><code>dependencies</code></td><td>安装哪些包</td><td><code>"."</code> 表示当前项目</td></tr>
+              <tr><td><code>graphs</code></td><td>暴露哪些图</td><td>值是 <code>文件:变量</code></td></tr>
+              <tr><td><code>env</code></td><td>环境变量文件</td><td>不要把密钥提交</td></tr>
+              <tr><td><code>python_version</code></td><td>运行时版本</td><td>与本地一致</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="storage">Postgres：checkpoint 与 store</h2>
+        <pre data-lang="python" data-file="postgres.py">from langgraph.checkpoint.postgres import PostgresSaver
+from langgraph.store.postgres import PostgresStore
+
+DB_URI = "postgresql://user:pass@localhost:5432/langgraph?sslmode=disable"
+
+with PostgresSaver.from_conn_string(DB_URI) as checkpointer:
+    checkpointer.setup()
+    graph = builder.compile(checkpointer=checkpointer)
+
+with PostgresStore.from_conn_string(DB_URI) as store:
+    store.setup()
+    graph = builder.compile(store=store)</pre>
+        <p>
+          <code>PostgresSaver</code>
+          <span class="src" data-src="libs/checkpoint-postgres/langgraph/checkpoint/postgres/__init__.py:45">postgres/__init__.py:45</span>
+          与 <code>PostgresStore</code>
+          <span class="src" data-src="libs/checkpoint-postgres/langgraph/store/postgres/base.py:668">base.py:668</span>
+          都需要先建表。多副本共用同一个数据库，才能共享 thread 与 store。
+        </p>
+
+        <h2 id="scale">多副本、队列与超时</h2>
+        <ul>
+          <li>多副本：checkpointer / store / 去重状态必须共享；否则同一 thread 会分裂。</li>
+          <li>同一 thread 的并发请求要串行化，或返回 409；不要让两个副本同时跑。</li>
+          <li>长任务走队列 / 后台 worker，HTTP 请求只负责提交与订阅。</li>
+          <li>超时分三层：模型调用、节点执行、请求总时长。</li>
+          <li>健康检查要区分 liveness（进程活着）与 readiness（依赖可用）。</li>
+        </ul>
+
+        <h2 id="pitfalls">陷阱与窍门</h2>
+        <div class="callout warn">
+          <span class="ct">多副本用 InMemorySaver</span>
+          <p><strong>你会看到</strong>请求落到不同副本时历史丢失。<strong>因为</strong>checkpoint 只在单进程内存。<strong>改成</strong>Postgres / SQLite 共享存储（SQLite 不适合多副本）。</p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">同一 thread 并发提交</span>
+          <p><strong>你会看到</strong>状态互相覆盖或重复执行。<strong>因为</strong>没有会话级串行。<strong>改成</strong>加锁 / 队列 / 409。</p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">把 langgraph dev 直接上生产</span>
+          <p><strong>你会看到</strong>无鉴权、无持久化、无扩容。<strong>因为</strong>dev 是本地开发模式。<strong>改成</strong>用 <code>langgraph up</code> 或自建 FastAPI + Postgres。</p>
+        </div>
+
+        <h2 id="quiz">自检三问</h2>
+        <ol>
+          <li><code>langgraph.json</code> 的 <code>graphs</code> 字段怎么指向一个图？</li>
+          <li>多副本下哪些状态必须共享？</li>
+          <li>liveness 与 readiness 的区别是什么？</li>
+        </ol>
+
+        <h2 id="exercise">30 分钟动手练习</h2>
+        <ol>
+          <li>用 <code>langgraph dev</code> 起一个图，调 API 跑一次 invoke。</li>
+          <li>把 checkpointer 换成 Postgres，重启服务后确认 thread 还在。</li>
+          <li>写一个 readiness 端点，检查数据库连接与 checkpoint 表是否存在。</li>
+        </ol>
+
+        <h2 id="next">下一步</h2>
+        <p>
+          下一章 <a href="17-capstone.html">17 综合案例</a>：
+          把 State、条件边、工具、checkpoint、interrupt、Store 与 Supervisor 串成一个服务。
+        </p>
+
+      </article>
+    </main>
+    <script src="../assets/nav.js"></script>
+    <script src="../assets/mini-highlight.js"></script>
+    <script src="../assets/site.js"></script>
+  </body>
+</html>

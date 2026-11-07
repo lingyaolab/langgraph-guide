@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="LangGraph interrupt() 的暂停语义、Command(resume=...)、同一节点重入、多个中断匹配与前端契约。" />
+    <meta property="og:type" content="article" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:site_name" content="LangGraph 1.2.20 学习站" />
+    <meta property="og:title" content="07 interrupt 与 HITL：让人在图中途接管 · LangGraph 1.2.20 学习站" />
+    <meta property="og:description" content="LangGraph interrupt() 的暂停语义、Command(resume=...)、同一节点重入、多个中断匹配与前端契约。" />
+    <title>07 interrupt 与 HITL：让人在图中途接管 · LangGraph 1.2.20 学习站</title>
+    <script>
+      try {
+        var t = localStorage.getItem("as-learn-theme");
+        if (!t) t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    </script>
+    <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
+    <link rel="stylesheet" href="../assets/base.css" />
+    <link rel="stylesheet" href="../assets/diagrams.css" />
+  </head>
+  <body data-page="07-hitl" data-root="..">
+    <main>
+      <article class="article">
+
+        <h1>07 · interrupt 与 HITL：让人在图中途接管</h1>
+        <p class="lede">
+          模型可以提议，但不能替人签字。LangGraph 的 <code>interrupt()</code>
+          把执行停在 checkpoint 上，等人给答案后从暂停点继续；这不是抛异常，也不是重新跑一遍。
+        </p>
+
+        <h2 id="goals">读完你能做到</h2>
+        <ul class="goals">
+          <li>在节点里调用 <code>interrupt()</code>，让图停在待确认状态</li>
+          <li>用 <code>Command(resume=...)</code> 把用户答案送回暂停点</li>
+          <li>说清「同一节点重入」与「从上一个 checkpoint 重跑」的区别</li>
+          <li>处理多个中断，并给前端一个稳定的待确认契约</li>
+        </ul>
+
+        <h2 id="why">先说为什么：模型不能替人签字</h2>
+        <p>
+          删除文件、发邮件、下单、改生产配置，这些动作需要人确认。
+          如果在 Python 里 <code>input()</code>，图就阻塞在进程里，无法持久化、无法多副本、无法恢复。
+          interrupt 把「等人」变成图的一等状态。
+        </p>
+
+        <h2 id="minimal">最小可跑：一次暂停与恢复</h2>
+        <pre data-lang="python" data-file="hitl.py">from typing import TypedDict
+
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph import END, START, StateGraph
+from langgraph.types import Command, interrupt
+
+
+class State(TypedDict):
+    action: str
+    approved: bool
+
+
+def ask(state: State) -> dict:
+    answer = interrupt({"question": f"是否执行 {state['action']}？"})
+    return {"approved": bool(answer)}
+
+
+def act(state: State) -> dict:
+    return {"action": state["action"] + (" 已执行" if state["approved"] else " 已取消")}
+
+
+builder = StateGraph(State)
+builder.add_node("ask", ask)
+builder.add_node("act", act)
+builder.add_edge(START, "ask")
+builder.add_edge("ask", "act")
+builder.add_edge("act", END)
+
+graph = builder.compile(checkpointer=InMemorySaver())
+config = {"configurable": {"thread_id": "hitl-1"}}
+
+graph.invoke({"action": "删除 /tmp/a.txt", "approved": False}, config)
+# 此时图停在 ask，等待 resume
+graph.invoke(Command(resume=True), config)
+print(graph.get_state(config).values)</pre>
+        <p>
+          <code>interrupt</code>
+          <span class="src" data-src="libs/langgraph/langgraph/types.py:913">types.py:913</span>
+          在节点内部调用，第一次执行到它会保存 checkpoint 并返回一个中断信号；
+          恢复时同一个节点会<strong>重新进入</strong>，这次 <code>interrupt()</code> 直接返回 resume 的值。
+        </p>
+
+        <h2 id="semantics">interrupt 的语义：不是抛异常</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>你以为</th><th>实际</th></tr></thead>
+            <tbody>
+              <tr><td>抛异常，节点中断</td><td>保存 checkpoint，整个图暂停</td></tr>
+              <tr><td>恢复时从头跑</td><td>从暂停节点重新进入，之前的副作用不重放</td></tr>
+              <tr><td>不需要 checkpointer</td><td>没有 checkpointer 就无法恢复</td></tr>
+              <tr><td>resume 值只给当前节点</td><td>值按中断 id 匹配，多个中断要分别恢复</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          <code>GraphInterrupt</code>
+          <span class="src" data-src="libs/langgraph/langgraph/errors.py:104">errors.py:104</span>
+          是内部冒泡机制，普通业务代码不应该捕获它当作失败。
+        </p>
+
+        <h2 id="resume">Command(resume=...)：怎么把答案送回去</h2>
+        <p>
+          恢复时调用 <code>graph.invoke(Command(resume=value), config)</code>，
+          <code>config</code> 必须还是同一个 <code>thread_id</code>。
+          值可以是布尔、字符串、字典；复杂表单建议用带 schema 的 dict。
+        </p>
+        <pre data-lang="python" data-file="resume.py">answer = {"approved": True, "reason": "已确认是测试文件"}
+graph.invoke(Command(resume=answer), config)</pre>
+
+        <h2 id="multi">多个中断与前端契约</h2>
+        <p>
+          一个 superstep 里可能有多个节点同时 interrupt。恢复时，
+          <code>Command(resume=...)</code> 会按中断 id 匹配；如果只恢复一个，其他仍挂起。
+          前端至少要保存三样东西：<code>thread_id</code>、中断 id、待确认的 payload。
+        </p>
+        <div class="callout tip">
+          <span class="ct">把「待确认」做成事件</span>
+          <p>
+            流式模式下，中断会以事件形式出现；前端据此渲染确认框，用户提交后用同一个
+            <code>thread_id</code> 调 resume。不要把确认状态只放在浏览器内存里。
+          </p>
+        </div>
+
+        <h2 id="pitfalls">陷阱与窍门</h2>
+        <div class="callout warn">
+          <span class="ct">在 interrupt 前做了副作用</span>
+          <p><strong>你会看到</strong>恢复后重复发邮件 / 重复扣款。<strong>因为</strong>节点会重新进入，interrupt 之前的代码会再跑。<strong>改成</strong>把副作用放到 interrupt 之后，或用幂等键。</p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">恢复时换了 thread_id</span>
+          <p><strong>你会看到</strong>找不到暂停点，图从头开始。<strong>因为</strong>中断是按 thread 保存的。<strong>改成</strong>恢复时使用同一个 config。</p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">没有 checkpointer 就调用 interrupt</span>
+          <p><strong>你会看到</strong>恢复时报缺少 checkpointer。<strong>因为</strong>暂停状态无处持久化。<strong>改成</strong>编译时挂 <code>checkpointer=...</code>。</p>
+        </div>
+
+        <h2 id="quiz">自检三问</h2>
+        <ol>
+          <li>interrupt 与抛异常的本质区别是什么？</li>
+          <li>恢复时为什么节点会重新进入？哪些代码会重复执行？</li>
+          <li>多个中断同时挂起时，前端至少要保存哪些标识？</li>
+        </ol>
+
+        <h2 id="exercise">20 分钟动手练习</h2>
+        <ol>
+          <li>把最小例子改成「拒绝」分支，确认图能正常结束而不是报错。</li>
+          <li>在 interrupt 前打印一行日志，恢复时观察它是否再次打印。</li>
+          <li>写两个节点同时 interrupt，分别 resume，确认两个都等到答案。</li>
+        </ol>
+
+        <h2 id="next">下一步</h2>
+        <p>
+          下一章 <a href="08-streaming.html">08 流式</a>：
+          图能暂停与恢复后，下一步是把执行过程实时推给前端。
+        </p>
+
+      </article>
+    </main>
+    <script src="../assets/nav.js"></script>
+    <script src="../assets/mini-highlight.js"></script>
+    <script src="../assets/site.js"></script>
+  </body>
+</html>

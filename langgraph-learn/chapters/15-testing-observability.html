@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="LangGraph 测试：FakeChatModel、确定性节点、图级断言、stream 调试、LangSmith 追踪与成本指标。" />
+    <meta property="og:type" content="article" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:site_name" content="LangGraph 1.2.20 学习站" />
+    <meta property="og:title" content="15 测试与可观测性：假模型、图断言与 LangSmith · LangGraph 1.2.20 学习站" />
+    <meta property="og:description" content="LangGraph 测试：FakeChatModel、确定性节点、图级断言、stream 调试、LangSmith 追踪与成本指标。" />
+    <title>15 测试与可观测性：假模型、图断言与 LangSmith · LangGraph 1.2.20 学习站</title>
+    <script>
+      try {
+        var t = localStorage.getItem("as-learn-theme");
+        if (!t) t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    </script>
+    <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
+    <link rel="stylesheet" href="../assets/base.css" />
+    <link rel="stylesheet" href="../assets/diagrams.css" />
+  </head>
+  <body data-page="15-testing-observability" data-root="..">
+    <main>
+      <article class="article">
+
+        <h1>15 · 测试与可观测性：假模型、图断言与 LangSmith</h1>
+        <p class="lede">
+          图的行为不能只靠「跑一遍看看」。这一章用假模型把模型调用变成确定性输入，
+          用图级断言检查「走了哪条边、state 变成什么」，再把追踪接上。
+        </p>
+
+        <h2 id="goals">读完你能做到</h2>
+        <ul class="goals">
+          <li>用假模型替换真实 LLM，让测试不访问网络</li>
+          <li>断言图走了哪条路径、最终 state 是什么</li>
+          <li>用 <code>stream</code> 调试节点顺序与更新内容</li>
+          <li>接 LangSmith / OpenTelemetry，看到每次运行的 trace 与 token</li>
+        </ul>
+
+        <h2 id="why">先说为什么：图的行为要能断言</h2>
+        <p>
+          一次真实模型调用既慢又不确定。测试应该断言「给定输入，图是否走到正确的节点、
+          是否更新了正确的字段」，而不是断言模型输出的自然语言。
+          假模型让这部分变成纯函数测试。
+        </p>
+
+        <h2 id="minimal">最小可跑：假模型跑通一张图</h2>
+        <pre data-lang="python" data-file="fake_model.py">from langchain_core.language_models.fake_chat_models import FakeListChatModel
+
+
+model = FakeListChatModel(responses=["这是固定回复"])
+
+# 把 model 当成普通 chat model 塞进节点
+def agent(state: dict) -> dict:
+    return {"messages": [model.invoke(state["messages"])]}</pre>
+        <p>
+          假模型只返回预设文本，不访问网络。需要工具调用时，可以用
+          <code>FakeMessagesListChatModel</code> 返回带 <code>tool_calls</code> 的 AIMessage。
+        </p>
+
+        <h2 id="assert">图级断言：看 state、看路径</h2>
+        <pre data-lang="python" data-file="test_graph.py">result = graph.invoke({"question": "我要退款", "route": "", "answer": ""})
+assert result["route"] == "billing"
+assert "退款" in result["answer"]
+
+# 看走过哪些节点
+steps = [u for u in graph.stream(
+    {"question": "我要退款", "route": "", "answer": ""},
+    stream_mode="updates",
+)]
+assert any("billing" in step for step in steps)</pre>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>断言层</th><th>看什么</th><th>适合</th></tr></thead>
+            <tbody>
+              <tr><td>节点单元测试</td><td>输入 state → 输出 partial state</td><td>纯函数、工具包装</td></tr>
+              <tr><td>图级断言</td><td>最终 state、走过的节点</td><td>路由、循环、终止</td></tr>
+              <tr><td>集成测试</td><td>真实模型 / 真实存储</td><td>发布前冒烟</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="observe">追踪与指标</h2>
+        <p>
+          LangSmith 通过环境变量开启，会自动记录图、节点、模型与工具调用。
+          没有 LangSmith 时，可以用 OpenTelemetry 或自己包一层节点装饰器，
+          至少记录：节点名、耗时、输入 / 输出大小、token、错误。
+        </p>
+        <ul>
+          <li>trace 里先看「走了哪条边」，再看「哪个节点慢」。</li>
+          <li>token 指标按节点聚合，定位是哪个 prompt 在烧钱。</li>
+          <li>错误按节点分类：模型 429、工具异常、状态冲突、checkpoint 失败。</li>
+        </ul>
+
+        <h2 id="pitfalls">陷阱与窍门</h2>
+        <div class="callout warn">
+          <span class="ct">用真实模型做单元测试</span>
+          <p><strong>你会看到</strong>测试慢、偶尔失败、账单上涨。<strong>因为</strong>模型不确定。<strong>改成</strong>假模型跑单测，真实模型只做发布前冒烟。</p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">只断言最终字符串</span>
+          <p><strong>你会看到</strong>模型换个措辞测试就红。<strong>因为</strong>断言太脆。<strong>改成</strong>断言 state 字段、路径、工具调用次数。</p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">没有 trace 就调多 Agent</span>
+          <p><strong>你会看到</strong>不知道谁改了 state。<strong>因为</strong>多 Agent 的路由不可见。<strong>改成</strong>先接 trace，再调拓扑。</p>
+        </div>
+
+        <h2 id="quiz">自检三问</h2>
+        <ol>
+          <li>为什么单元测试要用假模型？它替代了哪一层？</li>
+          <li>图级断言至少应该看哪两类信息？</li>
+          <li>trace 里定位「谁改坏了 state」的顺序是什么？</li>
+        </ol>
+
+        <h2 id="exercise">20 分钟动手练习</h2>
+        <ol>
+          <li>用假模型给 03 章的路由图写三个测试：退款、物流、其他。</li>
+          <li>断言 <code>stream_mode="updates"</code> 里出现的节点名顺序。</li>
+          <li>给一个节点加计时装饰器，输出每个节点的耗时。</li>
+        </ol>
+
+        <h2 id="next">下一步</h2>
+        <p>
+          下一章 <a href="16-deployment.html">16 部署与生产</a>：
+          图和测试都稳了，最后把它跑成一个可扩展的服务。
+        </p>
+
+      </article>
+    </main>
+    <script src="../assets/nav.js"></script>
+    <script src="../assets/mini-highlight.js"></script>
+    <script src="../assets/site.js"></script>
+  </body>
+</html>

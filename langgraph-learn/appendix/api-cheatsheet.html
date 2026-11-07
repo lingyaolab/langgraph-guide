@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="LangGraph StateGraph、compile、invoke/stream、Command、Send、interrupt、Checkpointer、Store 与 prebuilt 的常用签名。" />
+    <meta property="og:type" content="article" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:site_name" content="LangGraph 1.2.20 学习站" />
+    <meta property="og:title" content="C API 速查表 · LangGraph 1.2.20 学习站" />
+    <meta property="og:description" content="LangGraph StateGraph、compile、invoke/stream、Command、Send、interrupt、Checkpointer、Store 与 prebuilt 的常用签名。" />
+    <title>C API 速查表 · LangGraph 1.2.20 学习站</title>
+    <script>
+      try {
+        var t = localStorage.getItem("as-learn-theme");
+        if (!t) t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    </script>
+    <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
+    <link rel="stylesheet" href="../assets/base.css" />
+    <link rel="stylesheet" href="../assets/diagrams.css" />
+  </head>
+  <body data-page="api-cheatsheet" data-root="..">
+    <main>
+      <article class="article">
+
+        <h1>附录 C · API 速查表</h1>
+        <p class="lede">
+          只列本站用到的常用方法，不追求完整。签名以 1.2.20 源码为准；
+          先看章节里的最小例子，再回来查参数。
+        </p>
+
+        <h2 id="graph">StateGraph</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>方法</th><th>用途</th><th>出处</th></tr></thead>
+            <tbody>
+              <tr><td><code>StateGraph(State)</code></td><td>建图</td><td><span class="src" data-src="libs/langgraph/langgraph/graph/state.py:131">state.py:131</span></td></tr>
+              <tr><td><code>add_node(name, fn, retry_policy=..., cache_policy=...)</code></td><td>注册节点</td><td><span class="src" data-src="libs/langgraph/langgraph/graph/state.py:376">state.py:376</span></td></tr>
+              <tr><td><code>add_edge(start, end)</code></td><td>固定边</td><td><span class="src" data-src="libs/langgraph/langgraph/graph/state.py:928">state.py:928</span></td></tr>
+              <tr><td><code>add_conditional_edges(source, path, path_map=...)</code></td><td>条件边</td><td><span class="src" data-src="libs/langgraph/langgraph/graph/state.py:982">state.py:982</span></td></tr>
+              <tr><td><code>set_entry_point(name)</code></td><td>显式入口</td><td><span class="src" data-src="libs/langgraph/langgraph/graph/state.py:1079">state.py:1079</span></td></tr>
+              <tr><td><code>set_finish_point(name)</code></td><td>显式出口</td><td><span class="src" data-src="libs/langgraph/langgraph/graph/state.py:1116">state.py:1116</span></td></tr>
+              <tr><td><code>compile(checkpointer=..., store=...)</code></td><td>编译成执行器</td><td><span class="src" data-src="libs/langgraph/langgraph/graph/state.py:1177">state.py:1177</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="run">invoke / stream</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>方法</th><th>返回</th><th>出处</th></tr></thead>
+            <tbody>
+              <tr><td><code>graph.invoke(input, config)</code></td><td>最终 state</td><td><span class="src" data-src="libs/langgraph/langgraph/pregel/main.py:3870">main.py:3870</span></td></tr>
+              <tr><td><code>graph.stream(input, config, stream_mode=...)</code></td><td>事件生成器</td><td><span class="src" data-src="libs/langgraph/langgraph/pregel/main.py:2705">main.py:2705</span></td></tr>
+              <tr><td><code>graph.astream(...)</code></td><td>异步事件生成器</td><td><span class="src" data-src="libs/langgraph/langgraph/pregel/main.py:3117">main.py:3117</span></td></tr>
+              <tr><td><code>graph.astream_events(..., version=...)</code></td><td>链 / 模型 / 工具级事件</td><td><span class="src" data-src="libs/langgraph/langgraph/pregel/main.py:3813">main.py:3813</span></td></tr>
+              <tr><td><code>graph.get_state(config)</code></td><td>当前快照</td><td><span class="src" data-src="libs/langgraph/langgraph/pregel/main.py:1460">main.py:1460</span></td></tr>
+              <tr><td><code>graph.get_state_history(config)</code></td><td>历史快照</td><td><span class="src" data-src="libs/langgraph/langgraph/pregel/main.py:1510">main.py:1510</span></td></tr>
+              <tr><td><code>graph.update_state(config, values, as_node=...)</code></td><td>写入新快照</td><td><span class="src" data-src="libs/langgraph/langgraph/pregel/main.py:2613">main.py:2613</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="control">Command / Send / interrupt</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>对象</th><th>常用字段</th><th>出处</th></tr></thead>
+            <tbody>
+              <tr><td><code>Command</code></td><td><code>update</code>、<code>goto</code>、<code>resume</code></td><td><span class="src" data-src="libs/langgraph/langgraph/types.py:843">types.py:843</span></td></tr>
+              <tr><td><code>Send</code></td><td>节点名 + payload</td><td><span class="src" data-src="libs/langgraph/langgraph/types.py:748">types.py:748</span></td></tr>
+              <tr><td><code>interrupt(value)</code></td><td>暂停并返回值给前端</td><td><span class="src" data-src="libs/langgraph/langgraph/types.py:913">types.py:913</span></td></tr>
+              <tr><td><code>RetryPolicy</code></td><td><code>max_attempts</code>、<code>initial_interval</code>、<code>retry_on</code></td><td><span class="src" data-src="libs/langgraph/langgraph/types.py:428">types.py:428</span></td></tr>
+              <tr><td><code>CachePolicy</code></td><td>缓存键与 TTL</td><td><span class="src" data-src="libs/langgraph/langgraph/types.py:531">types.py:531</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="persist">Checkpointer / Store</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>对象</th><th>用途</th><th>出处</th></tr></thead>
+            <tbody>
+              <tr><td><code>BaseCheckpointSaver</code></td><td>checkpoint 契约</td><td><span class="src" data-src="libs/checkpoint/langgraph/checkpoint/base/__init__.py:199">base/__init__.py:199</span></td></tr>
+              <tr><td><code>InMemorySaver</code></td><td>测试 / 单进程</td><td><span class="src" data-src="libs/checkpoint/langgraph/checkpoint/memory/__init__.py:34">memory/__init__.py:34</span></td></tr>
+              <tr><td><code>SqliteSaver</code></td><td>本地持久化</td><td><span class="src" data-src="libs/checkpoint-sqlite/langgraph/checkpoint/sqlite/__init__.py:49">sqlite/__init__.py:49</span></td></tr>
+              <tr><td><code>PostgresSaver</code></td><td>多副本持久化</td><td><span class="src" data-src="libs/checkpoint-postgres/langgraph/checkpoint/postgres/__init__.py:45">postgres/__init__.py:45</span></td></tr>
+              <tr><td><code>BaseStore</code></td><td>长期记忆契约</td><td><span class="src" data-src="libs/checkpoint/langgraph/store/base/__init__.py:708">base/__init__.py:708</span></td></tr>
+              <tr><td><code>InMemoryStore</code></td><td>测试 / 单进程 Store</td><td><span class="src" data-src="libs/checkpoint/langgraph/store/memory/__init__.py:136">memory/__init__.py:136</span></td></tr>
+              <tr><td><code>PostgresStore</code></td><td>生产 Store</td><td><span class="src" data-src="libs/checkpoint-postgres/langgraph/store/postgres/base.py:668">base.py:668</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="prebuilt">prebuilt</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>对象</th><th>用途</th><th>出处</th></tr></thead>
+            <tbody>
+              <tr><td><code>create_react_agent</code></td><td>模型 + 工具 + 条件边的预构建 Agent（维护模式）</td><td><span class="src" data-src="libs/prebuilt/langgraph/prebuilt/chat_agent_executor.py:278">chat_agent_executor.py:278</span></td></tr>
+              <tr><td><code>ToolNode</code></td><td>执行 tool_calls</td><td><span class="src" data-src="libs/prebuilt/langgraph/prebuilt/tool_node.py:630">tool_node.py:630</span></td></tr>
+              <tr><td><code>tools_condition</code></td><td>工具路由</td><td><span class="src" data-src="libs/prebuilt/langgraph/prebuilt/tool_node.py:1616">tool_node.py:1616</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="next">下一步</h2>
+        <p>看 <a href="source-map.html">附录 D 源码地图</a>，或直接回到 <a href="../chapters/00-study-map.html">00 学习地图</a>。</p>
+
+      </article>
+    </main>
+    <script src="../assets/nav.js"></script>
+    <script src="../assets/mini-highlight.js"></script>
+    <script src="../assets/site.js"></script>
+  </body>
+</html>

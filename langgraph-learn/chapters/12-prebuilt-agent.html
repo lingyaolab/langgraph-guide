@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="LangGraph create_react_agent 的参数、内部图结构、checkpointer / store / interrupt 接入，以及 prebuilt 在 1.2.20 的维护状态。" />
+    <meta property="og:type" content="article" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:site_name" content="LangGraph 1.2.20 学习站" />
+    <meta property="og:title" content="12 预构建 ReAct Agent：create_react_agent 能做什么、不能做什么 · LangGraph 1.2.20 学习站" />
+    <meta property="og:description" content="LangGraph create_react_agent 的参数、内部图结构、checkpointer / store / interrupt 接入，以及 prebuilt 在 1.2.20 的维护状态。" />
+    <title>12 预构建 ReAct Agent：create_react_agent 能做什么、不能做什么 · LangGraph 1.2.20 学习站</title>
+    <script>
+      try {
+        var t = localStorage.getItem("as-learn-theme");
+        if (!t) t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    </script>
+    <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
+    <link rel="stylesheet" href="../assets/base.css" />
+    <link rel="stylesheet" href="../assets/diagrams.css" />
+  </head>
+  <body data-page="12-prebuilt-agent" data-root="..">
+    <main>
+      <article class="article">
+
+        <h1>12 · 预构建 ReAct Agent：create_react_agent 能做什么、不能做什么</h1>
+        <p class="lede">
+          <code>create_react_agent</code> 把「模型节点 + 工具节点 + 条件边」打包成一张图，
+          十行就能跑。但 1.2.20 的方向说明写得很清楚：<strong>prebuilt 是维护模式</strong>，
+          新 Agent 开发应该往上一层（harness）走，或自己显式搭图。这一章讲它的能力与边界。
+        </p>
+
+        <h2 id="goals">读完你能做到</h2>
+        <ul class="goals">
+          <li>用 <code>create_react_agent</code> 十行搭一个带工具的 Agent</li>
+          <li>说清它内部的两三个节点与工具循环</li>
+          <li>接入 checkpointer、store 与 interrupt</li>
+          <li>判断什么时候该自己搭图，而不是继续加参数</li>
+        </ul>
+
+        <h2 id="why">先说为什么：预构建是起点，不是终点</h2>
+        <p>
+          <code>create_react_agent</code>
+          <span class="src" data-src="libs/prebuilt/langgraph/prebuilt/chat_agent_executor.py:278">chat_agent_executor.py:278</span>
+          的价值是「让你五分钟看到工具循环」，不是「覆盖所有生产需求」。
+          一旦你要自定义路由、状态、多个 Agent、复杂的 HITL，显式搭图更清楚。
+        </p>
+
+        <h2 id="minimal">最小可跑：十行一个 Agent</h2>
+        <pre data-lang="python" data-file="prebuilt.py">from langchain.chat_models import init_chat_model
+from langchain_core.tools import tool
+from langgraph.prebuilt import create_react_agent
+
+
+@tool
+def get_weather(city: str) -> str:
+    """查询指定城市的天气。"""
+    return f"{city}: 18C, sunny"
+
+
+model = init_chat_model("deepseek:deepseek-chat")
+agent = create_react_agent(model, [get_weather])
+
+out = agent.invoke({"messages": [("user", "北京天气如何？")]})
+print(out["messages"][-1].content)</pre>
+
+        <h2 id="inside">内部图：模型节点 + 工具节点</h2>
+        <p>
+          它生成的图与 11 章手写的几乎一样：
+          <code>agent</code> 节点调模型，<code>tools</code> 节点是 <code>ToolNode</code>，
+          条件边用 <code>tools_condition</code>，工具执行后回到 <code>agent</code>。
+          区别是它还处理了 prompt、结构化输出、pre-model hook 等参数。
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>参数</th><th>作用</th><th>注意</th></tr></thead>
+            <tbody>
+              <tr><td><code>model</code></td><td>ChatModel 或模型名</td><td>工具要绑定后才能调用</td></tr>
+              <tr><td><code>tools</code></td><td>工具列表 / ToolNode</td><td>空列表就是纯聊天</td></tr>
+              <tr><td><code>prompt</code></td><td>系统提示或动态 prompt</td><td>不要和 state 里的 messages 冲突</td></tr>
+              <tr><td><code>checkpointer</code></td><td>持久化</td><td>多轮 / HITL 必需</td></tr>
+              <tr><td><code>store</code></td><td>长期记忆</td><td>跨 thread 共享</td></tr>
+              <tr><td><code>interrupt_before</code></td><td>在节点前暂停</td><td>调试 / 人工确认</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="extend">扩展：checkpointer、store、interrupt</h2>
+        <pre data-lang="python" data-file="with_checkpointer.py">from langgraph.checkpoint.memory import InMemorySaver
+
+agent = create_react_agent(
+    model,
+    [get_weather],
+    checkpointer=InMemorySaver(),
+)
+
+config = {"configurable": {"thread_id": "u-1"}}
+agent.invoke({"messages": [("user", "北京天气如何？")]}, config)</pre>
+        <p>
+          <code>interrupt_before=["tools"]</code> 可以在工具执行前暂停，
+          适合「删除 / 写操作」的人工确认。但更细粒度的确认，
+          建议在工具节点内部用 <code>interrupt()</code>（07 章）。
+        </p>
+
+        <h2 id="limits">边界：什么时候自己搭</h2>
+        <ul>
+          <li>需要自定义状态字段与 reducer，而不只是 messages。</li>
+          <li>需要多 Agent 路由、子图或非线性的控制流。</li>
+          <li>需要在工具前后插入审计、权限、预算等节点。</li>
+          <li>需要精确控制中断点、恢复语义与前端事件。</li>
+          <li>框架方向：prebuilt 是维护模式，新 Agent 能力应放在 harness 层，而不是继续堆参数。</li>
+        </ul>
+        <div class="callout warn">
+          <span class="ct">把 create_react_agent 当生产架构</span>
+          <p>
+            它适合原型与学习。生产里一旦出现多租户、复杂权限、长任务恢复，
+            显式图或 harness 层的可解释性更好。
+          </p>
+        </div>
+
+        <h2 id="pitfalls">陷阱与窍门</h2>
+        <div class="callout warn">
+          <span class="ct">模型已经 bind_tools，但 tools 参数不一致</span>
+          <p><strong>你会看到</strong> <code>ValueError: Number of tools in the model.bind_tools() and tools passed to create_react_agent must match</code>。<strong>因为</strong>绑定工具与传入 <code>tools</code> 不是同一组。<strong>改成</strong>只传未绑定的模型让 create_react_agent 自动绑定，或保证两边一致。</p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">没有 checkpointer 却用 interrupt_before</span>
+          <p><strong>你会看到</strong>暂停后无法恢复。<strong>因为</strong>暂停状态没有持久化。<strong>改成</strong>同时挂 checkpointer。</p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">把所有逻辑塞进 prompt</span>
+          <p><strong>你会看到</strong>行为不稳定、无法测试。<strong>因为</strong>流程应该在节点/边里，不在自然语言里。<strong>改成</strong>显式节点与条件边。</p>
+        </div>
+
+        <h2 id="quiz">自检三问</h2>
+        <ol>
+          <li><code>create_react_agent</code> 内部大致有哪几个节点？</li>
+          <li>它和 11 章手写的图有什么本质区别？</li>
+          <li>为什么 1.2.20 把 prebuilt 定位为维护模式？</li>
+        </ol>
+
+        <h2 id="exercise">20 分钟动手练习</h2>
+        <ol>
+          <li>用 create_react_agent 跑一个带两个工具的任务，打印每条消息的类型。</li>
+          <li>加 <code>interrupt_before=["tools"]</code>，观察暂停与恢复。</li>
+          <li>把同一个 Agent 用 11 章的手写图重写，比较代码量与可控性。</li>
+        </ol>
+
+        <h2 id="next">下一步</h2>
+        <p>
+          下一章 <a href="13-memory.html">13 记忆</a>：
+          checkpointer 解决会话内记忆，Store 解决跨会话记忆，两者不要混。
+        </p>
+
+      </article>
+    </main>
+    <script src="../assets/nav.js"></script>
+    <script src="../assets/mini-highlight.js"></script>
+    <script src="../assets/site.js"></script>
+  </body>
+</html>

@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="LangGraph Checkpointer 的写入时机、MemorySaver / SqliteSaver / PostgresSaver，thread_id 与 configurable，以及多轮对话为什么必须带同一个 thread_id。" />
+    <meta property="og:type" content="article" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:site_name" content="LangGraph 1.2.20 学习站" />
+    <meta property="og:title" content="05 Checkpointer 与 thread_id：断点、恢复与多轮 · LangGraph 1.2.20 学习站" />
+    <meta property="og:description" content="LangGraph Checkpointer 的写入时机、MemorySaver / SqliteSaver / PostgresSaver，thread_id 与 configurable，以及多轮对话为什么必须带同一个 thread_id。" />
+    <title>05 Checkpointer 与 thread_id：断点、恢复与多轮 · LangGraph 1.2.20 学习站</title>
+    <script>
+      try {
+        var t = localStorage.getItem("as-learn-theme");
+        if (!t) t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    </script>
+    <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
+    <link rel="stylesheet" href="../assets/base.css" />
+    <link rel="stylesheet" href="../assets/diagrams.css" />
+  </head>
+  <body data-page="05-checkpointer" data-root="..">
+    <main>
+      <article class="article">
+
+        <h1>05 · Checkpointer 与 thread_id：断点、恢复与多轮</h1>
+        <p class="lede">
+          默认情况下，图跑完就忘。要让多轮对话、失败恢复、人工暂停成立，
+          必须给图挂一个 <strong>checkpointer</strong>，并用 <code>thread_id</code> 把同一条会话串起来。
+        </p>
+
+        <h2 id="goals">读完你能做到</h2>
+        <ul class="goals">
+          <li>给图挂 <code>InMemorySaver</code>，用同一个 <code>thread_id</code> 跑两轮</li>
+          <li>说清 checkpoint 在什么时机写入、里面存了什么</li>
+          <li>在 SQLite / Postgres 之间选一个后端，并知道初始化步骤</li>
+          <li>解释为什么换一个 <code>thread_id</code> 就等于开新会话</li>
+        </ul>
+
+        <h2 id="why">先说为什么：图默认不记得上一次</h2>
+        <p>
+          图是「一次执行」的编排，不是会话容器。没有 checkpointer 时，
+          每次 <code>invoke</code> 都从你给的输入重新开始；上一轮的 messages 不会自动带过来。
+          多轮对话不是模型记住了，而是你把历史从 checkpoint 里读出来再喂回去。
+        </p>
+
+        <h2 id="minimal">最小可跑：两轮对话共享 thread_id</h2>
+        <pre data-lang="python" data-file="memory.py">from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph import END, START, MessagesState, StateGraph
+
+
+def echo(state: MessagesState) -> dict:
+    last = state["messages"][-1]
+    return {"messages": [("ai", f"你说了：{last.content}")]}
+
+
+builder = StateGraph(MessagesState)
+builder.add_node("echo", echo)
+builder.add_edge(START, "echo")
+builder.add_edge("echo", END)
+
+graph = builder.compile(checkpointer=InMemorySaver())
+
+config = {"configurable": {"thread_id": "user-1"}}
+graph.invoke({"messages": [("user", "我叫 Alice")]}, config)
+out = graph.invoke({"messages": [("user", "我叫什么？")]}, config)
+print(out["messages"][-1].content)</pre>
+        <p>
+          同一个 <code>thread_id</code> 下，第二次 <code>invoke</code> 会先加载上一次的 checkpoint，
+          再把新消息合并进 <code>messages</code>。换成 <code>user-2</code>，历史就是空的。
+        </p>
+
+        <h2 id="checkpoint">Checkpoint 里到底存了什么</h2>
+        <p>
+          checkpointer 的契约在 <code>BaseCheckpointSaver</code>
+          <span class="src" data-src="libs/checkpoint/langgraph/checkpoint/base/__init__.py:199">base/__init__.py:199</span>，
+          核心是 <code>get_tuple</code> / <code>put</code> / <code>list</code>。
+          执行器在每个 superstep 之后写一次：
+          <span class="src" data-src="libs/langgraph/langgraph/pregel/_loop.py:768">_loop.py:768</span>。
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>内容</th><th>用途</th></tr></thead>
+            <tbody>
+              <tr><td><code>channel_values</code></td><td>当前 state 的各个字段</td></tr>
+              <tr><td><code>channel_versions</code></td><td>每个字段的版本，用于冲突检测与增量</td></tr>
+              <tr><td><code>versions_seen</code></td><td>哪些节点已经看过哪个版本</td></tr>
+              <tr><td><code>pending_writes</code></td><td>已产生但还没合并的写入</td></tr>
+              <tr><td><code>metadata</code></td><td>step、source、run_id 等</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          这也解释了为什么 state 里的字段必须可序列化：checkpoint 要把它写进内存 / SQLite / Postgres。
+        </p>
+
+        <h2 id="backends">后端选型：内存、SQLite、Postgres</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>后端</th><th>适合</th><th>注意</th></tr></thead>
+            <tbody>
+              <tr><td><code>InMemorySaver</code><span class="src" data-src="libs/checkpoint/langgraph/checkpoint/memory/__init__.py:34">memory/__init__.py:34</span></td><td>单元测试、单进程演示</td><td>进程退出即丢</td></tr>
+              <tr><td><code>SqliteSaver</code><span class="src" data-src="libs/checkpoint-sqlite/langgraph/checkpoint/sqlite/__init__.py:49">sqlite/__init__.py:49</span></td><td>本地持久化、单机服务</td><td>要先 <code>setup()</code> 建表</td></tr>
+              <tr><td><code>PostgresSaver</code><span class="src" data-src="libs/checkpoint-postgres/langgraph/checkpoint/postgres/__init__.py:45">postgres/__init__.py:45</span></td><td>多副本、生产</td><td>要先 <code>setup()</code>，连接池要配</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <pre data-lang="python" data-file="sqlite.py">import sqlite3
+
+from langgraph.checkpoint.sqlite import SqliteSaver
+
+conn = sqlite3.connect("checkpoints.db", check_same_thread=False)
+checkpointer = SqliteSaver(conn)
+checkpointer.setup()
+
+graph = builder.compile(checkpointer=checkpointer)</pre>
+
+        <h2 id="pitfalls">陷阱与窍门</h2>
+        <div class="callout warn">
+          <span class="ct">调用时忘了传 config</span>
+          <p><strong>你会看到</strong>每次都是新会话，历史不增长。<strong>因为</strong>没有 <code>thread_id</code> 就找不到对应 checkpoint。<strong>改成</strong>所有调用都传同一个 <code>{"configurable": {"thread_id": ...}}</code>。</p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">以为 InMemorySaver 能跨进程</span>
+          <p><strong>你会看到</strong>重启后历史全丢。<strong>因为</strong>它只存在当前进程内存。<strong>改成</strong>本地用 SQLite，多副本用 Postgres。</p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">把大对象塞进 state</span>
+          <p><strong>你会看到</strong>checkpoint 体积暴涨、写入变慢。<strong>因为</strong>每个 superstep 都会写一次。<strong>改成</strong>state 只放必要字段，大文件走外部存储。</p>
+        </div>
+
+        <h2 id="quiz">自检三问</h2>
+        <ol>
+          <li>checkpoint 在什么时机写入？它和「一次 invoke 结束」是同一个时刻吗？</li>
+          <li>为什么换 <code>thread_id</code> 就等于开新会话？</li>
+          <li>InMemorySaver、SqliteSaver、PostgresSaver 各适合什么场景？</li>
+        </ol>
+
+        <h2 id="exercise">20 分钟动手练习</h2>
+        <ol>
+          <li>把最小例子换成 SQLite，跑两轮后重启进程，再问一次，确认历史还在。</li>
+          <li>用两个不同 <code>thread_id</code> 交错调用，确认它们互不影响。</li>
+          <li>把 <code>messages</code> 换成一个自定义列表字段，观察 checkpoint 里它的版本变化。</li>
+        </ol>
+
+        <h2 id="next">下一步</h2>
+        <p>
+          下一章 <a href="06-time-travel.html">06 时间旅行与状态编辑</a>：
+          checkpoint 不只用于恢复，还能回放、分叉和人工修正。
+        </p>
+
+      </article>
+    </main>
+    <script src="../assets/nav.js"></script>
+    <script src="../assets/mini-highlight.js"></script>
+    <script src="../assets/site.js"></script>
+  </body>
+</html>

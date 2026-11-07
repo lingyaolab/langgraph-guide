@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="LangGraph Command 同时更新 state 与跳转、Send 做动态 fan-out、并行节点合并顺序，以及什么时候别用 Send。" />
+    <meta property="og:type" content="article" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:site_name" content="LangGraph 1.2.20 学习站" />
+    <meta property="og:title" content="04 Command、Send 与并行：动态路由和 map-reduce · LangGraph 1.2.20 学习站" />
+    <meta property="og:description" content="LangGraph Command 同时更新 state 与跳转、Send 做动态 fan-out、并行节点合并顺序，以及什么时候别用 Send。" />
+    <title>04 Command、Send 与并行：动态路由和 map-reduce · LangGraph 1.2.20 学习站</title>
+    <script>
+      try {
+        var t = localStorage.getItem("as-learn-theme");
+        if (!t) t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    </script>
+    <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
+    <link rel="stylesheet" href="../assets/base.css" />
+    <link rel="stylesheet" href="../assets/diagrams.css" />
+  </head>
+  <body data-page="04-command-send" data-root="..">
+    <main>
+      <article class="article">
+
+        <h1>04 · Command、Send 与并行：动态路由和 map-reduce</h1>
+        <p class="lede">
+          条件边只能「选一条边」，不能同时改状态；当节点需要既更新 state 又指定下一个节点，
+          或者一条输入要分给 N 个节点并行处理时，就要用 <code>Command</code> 与 <code>Send</code>。
+        </p>
+
+        <h2 id="goals">读完你能做到</h2>
+        <ul class="goals">
+          <li>用 <code>Command(update=..., goto=...)</code> 在一个节点里同时改状态与跳转</li>
+          <li>用 <code>Send</code> 做动态 fan-out，把一条输入分给多个节点</li>
+          <li>理解并行节点的合并顺序与 reducer 的关系</li>
+          <li>判断什么时候用 Send，什么时候普通边就够了</li>
+        </ul>
+
+        <h2 id="why">先说为什么：静态边不够用的时候</h2>
+        <p>
+          条件边是「先算路由，再走边」，路由函数只能返回路径，不能改 state。
+          如果你的节点已经知道「下一步是谁」，并且要顺手写一个字段，<code>Command</code> 更直接。
+          <code>Send</code> 解决另一类问题：运行时才知道要分几路，比如按文档列表逐篇总结。
+        </p>
+
+        <h2 id="minimal">最小可跑：Command 改写路由</h2>
+        <pre data-lang="python" data-file="command.py">from typing import TypedDict
+
+from langgraph.graph import END, START, StateGraph
+from langgraph.types import Command
+
+
+class State(TypedDict):
+    question: str
+    route: str
+    answer: str
+
+
+def triage(state: State) -> Command:
+    route = "billing" if "退款" in state["question"] else "general"
+    return Command(update={"route": route}, goto=route)
+
+
+def billing(state: State) -> dict:
+    return {"answer": "进入退款流程"}
+
+
+def general(state: State) -> dict:
+    return {"answer": "进入通用回答"}
+
+
+builder = StateGraph(State)
+builder.add_node("triage", triage)
+builder.add_node("billing", billing)
+builder.add_node("general", general)
+builder.add_edge(START, "triage")
+builder.add_edge("billing", END)
+builder.add_edge("general", END)
+
+graph = builder.compile()
+print(graph.invoke({"question": "我要退款", "route": "", "answer": ""}))</pre>
+        <p>
+          <code>Command</code>
+          <span class="src" data-src="libs/langgraph/langgraph/types.py:843">types.py:843</span>
+          的 <code>update</code> 和 <code>goto</code> 会在同一个 superstep 里生效；
+          不需要再给 <code>triage</code> 加条件边。
+        </p>
+
+        <h2 id="send">Send：把一条输入分给 N 个节点</h2>
+        <p>
+          <code>Send</code>
+          <span class="src" data-src="libs/langgraph/langgraph/types.py:748">types.py:748</span>
+          不是「一条边」，而是一组动态任务：路由函数返回 <code>[Send("worker", {...}), ...]</code>，
+          执行器会为每个 Send 启动一个实例。每个实例拿到的是自己那份输入，不是全局 state。
+        </p>
+        <pre data-lang="python" data-file="map_reduce.py">from typing import Annotated, TypedDict
+from operator import add
+
+from langgraph.graph import END, START, StateGraph
+from langgraph.types import Send
+
+
+class State(TypedDict):
+    docs: list[str]
+    summaries: Annotated[list[str], add]
+    report: str
+
+
+def fan_out(state: State):
+    return [Send("summarize", {"doc": d}) for d in state["docs"]]
+
+
+def summarize(payload: dict) -> dict:
+    return {"summaries": [payload["doc"][:20]]}
+
+
+def merge(state: State) -> dict:
+    return {"report": "\n".join(sorted(state["summaries"]))}
+
+
+builder = StateGraph(State)
+builder.add_node("summarize", summarize)
+builder.add_node("merge", merge)
+builder.add_conditional_edges(START, fan_out, ["summarize"])
+builder.add_edge("summarize", "merge")
+builder.add_edge("merge", END)
+
+graph = builder.compile()
+print(graph.invoke({"docs": ["a" * 30, "b" * 30], "summaries": []}))</pre>
+        <p>
+          这里 <code>summaries</code> 必须用 <code>add</code> 这类 reducer 合并，
+          否则多个并行实例写同一个字段会冲突。合并顺序不保证与输入顺序一致；
+          需要稳定顺序就在结果里带序号，最后统一排序。
+        </p>
+
+        <h2 id="merge">并行结果的合并与顺序</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>字段类型</th><th>并行写入的行为</th><th>建议</th></tr></thead>
+            <tbody>
+              <tr><td>无 reducer</td><td>多个实例写同一字段会报 <code>InvalidUpdateError</code></td><td>每个实例写不同字段，或用 reducer</td></tr>
+              <tr><td><code>add</code> / 自定义 reducer</td><td>按 reducer 合并，顺序不保证</td><td>结果里带序号，最后排序</td></tr>
+              <tr><td>消息列表</td><td><code>add_messages</code> 按 id 去重追加</td><td>并行节点各写独立消息 id</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="callout tip">
+          <span class="ct">Send 的输入不是全局 state</span>
+          <p>
+            Send 的 payload 会作为该实例的初始输入。它看不到父图当前的全部字段，
+            需要什么就显式塞进 payload；这也是控制并行实例输入面的好机会。
+          </p>
+        </div>
+
+        <h2 id="pitfalls">陷阱与窍门</h2>
+        <div class="callout warn">
+          <span class="ct">Command 里 goto 到不存在的节点</span>
+          <p><strong>你会看到</strong>运行时找不到目标节点。<strong>因为</strong><code>goto</code> 必须是已注册节点名或 <code>END</code>。<strong>改成</strong>先注册节点，再拼 goto。</p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">Send 的返回值和状态字段同名冲突</span>
+          <p><strong>你会看到</strong>并行实例互相覆盖。<strong>因为</strong>字段没有 reducer。<strong>改成</strong>给汇总字段加 reducer，或让每个实例写独立 key。</p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">用 Send 做固定两路并行</span>
+          <p><strong>你会看到</strong>代码比普通边更复杂。<strong>因为</strong>Send 是为「运行时才知道几路」设计的。<strong>改成</strong>固定分支用普通边 + 多个节点即可。</p>
+        </div>
+
+        <h2 id="quiz">自检三问</h2>
+        <ol>
+          <li>Command 与条件边的职责差异是什么？</li>
+          <li>Send 的 payload 与全局 state 是什么关系？</li>
+          <li>并行节点写同一个字段，为什么需要 reducer？</li>
+        </ol>
+
+        <h2 id="exercise">20 分钟动手练习</h2>
+        <ol>
+          <li>把 <code>triage</code> 改成三路，并用 Command 同时写一个 <code>confidence</code> 字段。</li>
+          <li>用 Send 把 3 个文档分给 3 个 summarize 实例，确认 summaries 合并出 3 条。</li>
+          <li>把 summaries 的 reducer 删掉，复现并行冲突的报错。</li>
+        </ol>
+
+        <h2 id="next">下一步</h2>
+        <p>
+          下一章 <a href="05-checkpointer.html">05 Checkpointer 与 thread_id</a>：
+          图已经能跑、能分叉，接下来让它「跑一半停下来也不丢」。
+        </p>
+
+      </article>
+    </main>
+    <script src="../assets/nav.js"></script>
+    <script src="../assets/mini-highlight.js"></script>
+    <script src="../assets/site.js"></script>
+  </body>
+</html>

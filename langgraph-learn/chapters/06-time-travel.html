@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="LangGraph get_state / get_state_history / update_state，从历史 checkpoint 重跑、分叉与状态修正的安全边界。" />
+    <meta property="og:type" content="article" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:site_name" content="LangGraph 1.2.20 学习站" />
+    <meta property="og:title" content="06 时间旅行与状态编辑：回放、分叉与人工修正 · LangGraph 1.2.20 学习站" />
+    <meta property="og:description" content="LangGraph get_state / get_state_history / update_state，从历史 checkpoint 重跑、分叉与状态修正的安全边界。" />
+    <title>06 时间旅行与状态编辑：回放、分叉与人工修正 · LangGraph 1.2.20 学习站</title>
+    <script>
+      try {
+        var t = localStorage.getItem("as-learn-theme");
+        if (!t) t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    </script>
+    <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
+    <link rel="stylesheet" href="../assets/base.css" />
+    <link rel="stylesheet" href="../assets/diagrams.css" />
+  </head>
+  <body data-page="06-time-travel" data-root="..">
+    <main>
+      <article class="article">
+
+        <h1>06 · 时间旅行与状态编辑：回放、分叉与人工修正</h1>
+        <p class="lede">
+          有了 checkpoint，图就不只有「当前状态」，还有一条历史。
+          你可以读任意一步、从旧点重跑、甚至直接改 state 再继续。这一章讲清这些操作的语义与风险。
+        </p>
+
+        <h2 id="goals">读完你能做到</h2>
+        <ul class="goals">
+          <li>用 <code>get_state</code> 读当前状态，用 <code>get_state_history</code> 读历史</li>
+          <li>从某个历史 checkpoint 重跑，理解「回放」与「分叉」的区别</li>
+          <li>用 <code>update_state</code> 人工修正状态，并知道它会不会触发节点</li>
+          <li>说清时间旅行在调试、人工修正与 A/B 对比中的边界</li>
+        </ul>
+
+        <h2 id="why">先说为什么：调试不是重跑一遍</h2>
+        <p>
+          复现一个 bug 通常需要「当时的输入、当时的 state、当时走的那条边」。
+          重跑只能碰运气；checkpoint 把这些都留下来了。时间旅行让你从故障前一步继续，
+          而不是从头再烧一遍 token。
+        </p>
+
+        <h2 id="minimal">最小可跑：读一次历史并回放</h2>
+        <pre data-lang="python" data-file="history.py">config = {"configurable": {"thread_id": "demo"}}
+
+# 当前状态
+snapshot = graph.get_state(config)
+print(snapshot.values)
+print(snapshot.next)
+
+# 历史，从新到旧
+for item in graph.get_state_history(config):
+    print(item.config["configurable"]["checkpoint_id"], item.metadata["step"])</pre>
+        <p>
+          <code>get_state</code>
+          <span class="src" data-src="libs/langgraph/langgraph/pregel/main.py:1460">main.py:1460</span>
+          返回当前快照；<code>get_state_history</code>
+          <span class="src" data-src="libs/langgraph/langgraph/pregel/main.py:1510">main.py:1510</span>
+          返回整条链。每个快照都带自己的 <code>checkpoint_id</code> 与 <code>step</code>。
+        </p>
+
+        <h2 id="edit">update_state：改状态而不改代码</h2>
+        <pre data-lang="python" data-file="update_state.py">graph.update_state(
+    config,
+    {"messages": [("user", "这是一条人工补录的消息")]},
+    as_node="agent",
+)</pre>
+        <p>
+          <code>update_state</code>
+          <span class="src" data-src="libs/langgraph/langgraph/pregel/main.py:2613">main.py:2613</span>
+          会把这次修改写成一个新的 checkpoint。默认它像某个节点刚跑完一样合并 state；
+          <code>as_node</code> 决定用哪个节点的写入语义。它不会自动继续执行，下一次 <code>invoke</code> 才继续。
+        </p>
+        <div class="callout warn">
+          <span class="ct">update_state 不是「改历史」</span>
+          <p>
+            它追加一个新的 checkpoint，旧历史还在。想在旧点分叉，要先拿到那个
+            <code>checkpoint_id</code>，再以它为父继续跑。
+          </p>
+        </div>
+
+        <h2 id="fork">分叉：从旧 checkpoint 开新分支</h2>
+        <pre data-lang="python" data-file="fork.py">history = list(graph.get_state_history(config))
+old = history[-2]   # 选一个较早的点
+
+fork_config = graph.update_state(
+    old.config,
+    {"messages": [("user", "换一个方向重试")]},
+    as_node="agent",
+)
+
+graph.invoke(None, fork_config)   # 从分叉点继续</pre>
+        <p>
+          分叉的语义是「新的 checkpoint 以旧 checkpoint 为父」，原来的线程继续保留。
+          这适合 A/B 对比与「回滚到某一步再试」，但要注意外部副作用（发邮件、写数据库）不会自动回滚。
+        </p>
+
+        <h2 id="pitfalls">陷阱与窍门</h2>
+        <div class="callout warn">
+          <span class="ct">把时间旅行当成事务回滚</span>
+          <p><strong>你会看到</strong>外部系统已经产生了重复副作用。<strong>因为</strong>checkpoint 只回滚图内状态。<strong>改成</strong>把副作用做成幂等，或记录外部操作 id。</p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">用 update_state 改完就以为节点会重跑</span>
+          <p><strong>你会看到</strong>状态变了但流程没继续。<strong>因为</strong>update_state 只写 checkpoint。<strong>改成</strong>再调一次 <code>invoke(None, config)</code>。</p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">分叉后还用原 thread_id 查当前状态</span>
+          <p><strong>你会看到</strong>读到的不是分叉分支。<strong>因为</strong>分叉有新的 checkpoint 链。<strong>改成</strong>保存分叉返回的 config，用它继续。</p>
+        </div>
+
+        <h2 id="quiz">自检三问</h2>
+        <ol>
+          <li><code>get_state</code> 与 <code>get_state_history</code> 返回的对象有什么不同？</li>
+          <li><code>update_state</code> 会不会自动触发节点执行？</li>
+          <li>时间旅行能回滚外部副作用吗？为什么？</li>
+        </ol>
+
+        <h2 id="exercise">20 分钟动手练习</h2>
+        <ol>
+          <li>跑三轮对话，打印每一轮的 <code>checkpoint_id</code> 与 <code>step</code>。</li>
+          <li>从第二轮分叉，换一句输入继续，确认原线程还在。</li>
+          <li>用 <code>update_state</code> 改一个字段，再 <code>invoke(None)</code>，观察哪个节点执行了。</li>
+        </ol>
+
+        <h2 id="next">下一步</h2>
+        <p>
+          下一章 <a href="07-hitl.html">07 interrupt 与 HITL</a>：
+          时间旅行是「人改状态」，interrupt 是「人决定流程要不要继续」。
+        </p>
+
+      </article>
+    </main>
+    <script src="../assets/nav.js"></script>
+    <script src="../assets/mini-highlight.js"></script>
+    <script src="../assets/site.js"></script>
+  </body>
+</html>

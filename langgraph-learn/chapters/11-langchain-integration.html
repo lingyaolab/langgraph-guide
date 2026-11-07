@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="LangGraph 与 LangChain 的边界、init_chat_model、bind_tools、ToolNode、tools_condition 与 ToolMessage。" />
+    <meta property="og:type" content="article" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:site_name" content="LangGraph 1.2.20 学习站" />
+    <meta property="og:title" content="11 LangChain 集成：模型、工具与 ToolNode · LangGraph 1.2.20 学习站" />
+    <meta property="og:description" content="LangGraph 与 LangChain 的边界、init_chat_model、bind_tools、ToolNode、tools_condition 与 ToolMessage。" />
+    <title>11 LangChain 集成：模型、工具与 ToolNode · LangGraph 1.2.20 学习站</title>
+    <script>
+      try {
+        var t = localStorage.getItem("as-learn-theme");
+        if (!t) t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    </script>
+    <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
+    <link rel="stylesheet" href="../assets/base.css" />
+    <link rel="stylesheet" href="../assets/diagrams.css" />
+  </head>
+  <body data-page="11-langchain-integration" data-root="..">
+    <main>
+      <article class="article">
+
+        <h1>11 · LangChain 集成：模型、工具与 ToolNode</h1>
+        <p class="lede">
+          LangGraph 本身不带模型与工具，它只负责编排。真实应用里，
+          模型来自 LangChain 的 chat model，工具通过 <code>bind_tools</code> 暴露，
+          <code>ToolNode</code> 负责执行。这一章把这条接缝讲清。
+        </p>
+
+        <h2 id="goals">读完你能做到</h2>
+        <ul class="goals">
+          <li>用 <code>init_chat_model</code> 创建模型，并用 <code>bind_tools</code> 暴露工具</li>
+          <li>用 <code>ToolNode</code> 执行工具调用，把 <code>ToolMessage</code> 写回消息</li>
+          <li>用 <code>tools_condition</code> 做「有工具就去工具节点，没有就结束」的路由</li>
+          <li>说清模型返回 <code>tool_calls</code> 后图为什么能回到模型节点</li>
+        </ul>
+
+        <h2 id="why">先说为什么：LangGraph 不带模型，只带编排</h2>
+        <p>
+          这是最容易混的一层：<code>StateGraph</code> 不知道什么是 LLM；
+          <code>ChatModel</code> 也不知道什么是图。两者通过「节点里调用模型」和
+          「条件边看 tool_calls」连接。理解这条边界，换模型、换工具都不会动图结构。
+        </p>
+
+        <h2 id="minimal">最小可跑：模型 + 工具 + 图</h2>
+        <pre data-lang="python" data-file="tool_agent.py">from langchain.chat_models import init_chat_model
+from langchain_core.tools import tool
+from langgraph.graph import END, START, MessagesState, StateGraph
+from langgraph.prebuilt import ToolNode, tools_condition
+
+
+@tool
+def get_weather(city: str) -> str:
+    """查询指定城市的天气。"""
+    return f"{city}: 18C, sunny"
+
+
+model = init_chat_model("deepseek:deepseek-chat").bind_tools([get_weather])
+
+
+def agent(state: MessagesState) -> dict:
+    return {"messages": [model.invoke(state["messages"])]}
+
+
+builder = StateGraph(MessagesState)
+builder.add_node("agent", agent)
+builder.add_node("tools", ToolNode([get_weather]))
+builder.add_edge(START, "agent")
+builder.add_conditional_edges("agent", tools_condition)
+builder.add_edge("tools", "agent")
+
+graph = builder.compile()
+out = graph.invoke({"messages": [("user", "北京天气如何？")]})
+print(out["messages"][-1].content)</pre>
+
+        <h2 id="tools">ToolNode 与 tools_condition</h2>
+        <p>
+          <code>ToolNode</code>
+          <span class="src" data-src="libs/prebuilt/langgraph/prebuilt/tool_node.py:630">tool_node.py:630</span>
+          是一个预构建节点：它读最后一条 AIMessage 的 <code>tool_calls</code>，
+          逐个执行，把结果包装成 <code>ToolMessage</code> 追加回 messages。
+          <code>tools_condition</code>
+          <span class="src" data-src="libs/prebuilt/langgraph/prebuilt/tool_node.py:1616">tool_node.py:1616</span>
+          是配套路由：有 tool_calls 就去 <code>"tools"</code>，没有就去 <code>END</code>。
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>对象</th><th>职责</th><th>不做什么</th></tr></thead>
+            <tbody>
+              <tr><td><code>model.bind_tools</code></td><td>把工具 schema 告诉模型</td><td>不执行工具</td></tr>
+              <tr><td><code>ToolNode</code></td><td>执行 <code>tool_calls</code>，写回 ToolMessage</td><td>不决定下一步</td></tr>
+              <tr><td><code>tools_condition</code></td><td>根据 tool_calls 选边</td><td>不执行工具</td></tr>
+              <tr><td><code>agent</code> 节点</td><td>调模型，返回 AIMessage</td><td>不解析工具结果</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="messages">工具消息怎么回到模型</h2>
+        <p>
+          工具执行完，<code>ToolMessage</code> 会带着 <code>tool_call_id</code> 写回 messages。
+          模型下一轮看到这条消息，就知道「哪个调用返回了什么」。
+          图通过 <code>add_edge("tools", "agent")</code> 回到模型节点，形成循环；
+          <code>tools_condition</code> 在没有新工具调用时结束循环。
+        </p>
+        <div class="callout warn">
+          <span class="ct">工具结果不要只放在 state 的自定义字段</span>
+          <p>
+            模型只读 messages。把工具结果放在 <code>last_tool_result</code> 这种字段里，
+            模型看不到；除非你在下一轮手动拼进消息。
+          </p>
+        </div>
+
+        <h2 id="pitfalls">陷阱与窍门</h2>
+        <div class="callout warn">
+          <span class="ct">忘记 bind_tools</span>
+          <p><strong>你会看到</strong>模型永远不调用工具。<strong>因为</strong>schema 没传给模型。<strong>改成</strong><code>model.bind_tools([...])</code>，并把绑定后的模型放进节点。</p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">工具名与路由名不一致</span>
+          <p><strong>你会看到</strong><code>tools_condition</code> 指向的节点不存在。<strong>因为</strong>默认节点名是 <code>"tools"</code>。<strong>改成</strong>把 ToolNode 注册为 <code>"tools"</code>，或用自定义路由。</p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">工具里抛异常</span>
+          <p><strong>你会看到</strong>整张图失败，而不是模型收到错误。<strong>因为</strong>ToolNode 默认让异常冒泡。<strong>改成</strong>在工具里捕获并返回可读错误文本，让模型换方案。</p>
+        </div>
+
+        <h2 id="quiz">自检三问</h2>
+        <ol>
+          <li><code>bind_tools</code>、<code>ToolNode</code>、<code>tools_condition</code> 各负责什么？</li>
+          <li>工具结果为什么要以 <code>ToolMessage</code> 写回 messages？</li>
+          <li>工具循环靠哪条边回到模型节点？靠什么结束？</li>
+        </ol>
+
+        <h2 id="exercise">20 分钟动手练习</h2>
+        <ol>
+          <li>加第二个工具，观察模型一次返回两个 tool_calls 时 ToolNode 的行为。</li>
+          <li>把 ToolNode 注册成别的名字，改 <code>tools_condition</code> 的路由映射。</li>
+          <li>让工具抛异常，先观察默认行为，再改成返回错误文本。</li>
+        </ol>
+
+        <h2 id="next">下一步</h2>
+        <p>
+          下一章 <a href="12-prebuilt-agent.html">12 预构建 ReAct Agent</a>：
+          上面这张图其实就是 <code>create_react_agent</code> 帮你搭的东西；但 1.2.20 的定位已经变了。
+        </p>
+
+      </article>
+    </main>
+    <script src="../assets/nav.js"></script>
+    <script src="../assets/mini-highlight.js"></script>
+    <script src="../assets/site.js"></script>
+  </body>
+</html>

@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="LangGraph 节点签名、普通边、add_conditional_edges、路径映射与 END，以及循环如何靠条件边停下来。" />
+    <meta property="og:type" content="article" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:site_name" content="LangGraph 1.2.20 学习站" />
+    <meta property="og:title" content="03 节点、边与条件路由：谁决定下一步 · LangGraph 1.2.20 学习站" />
+    <meta property="og:description" content="LangGraph 节点签名、普通边、add_conditional_edges、路径映射与 END，以及循环如何靠条件边停下来。" />
+    <title>03 节点、边与条件路由：谁决定下一步 · LangGraph 1.2.20 学习站</title>
+    <script>
+      try {
+        var t = localStorage.getItem("as-learn-theme");
+        if (!t) t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    </script>
+    <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
+    <link rel="stylesheet" href="../assets/base.css" />
+    <link rel="stylesheet" href="../assets/diagrams.css" />
+  </head>
+  <body data-page="03-nodes-edges" data-root="..">
+    <main>
+      <article class="article">
+
+        <h1>03 · 节点、边与条件路由：谁决定下一步</h1>
+        <p class="lede">
+          图的控制流不是写死的 <code>if/else</code>，而是「当前节点返回什么 → 路由函数选哪条边」。
+          这一章把普通边、条件边和循环讲清楚，并给出停止条件的写法。
+        </p>
+
+        <h2 id="goals">读完你能做到</h2>
+        <ul class="goals">
+          <li>写出符合签名的节点函数，知道它可以同步也可以异步</li>
+          <li>用 <code>add_conditional_edges</code> 做二选一与多路路由</li>
+          <li>用路径映射把路由结果翻译成节点名</li>
+          <li>给循环设置明确的停止条件，避免 <code>GraphRecursionError</code></li>
+        </ul>
+
+        <h2 id="why">先说为什么：图把控制流变成数据</h2>
+        <p>
+          当分支条件来自模型输出、工具结果或人工确认时，把它写进 Python 的 <code>if</code>
+          会让流程不可见、不可回放。条件边把「下一步是谁」变成一次可观察的路由决策，
+          也让 checkpoint 能记录「当时为什么走这条」。
+        </p>
+
+        <h2 id="minimal">最小可跑：一个二选一的路由</h2>
+        <pre data-lang="python" data-file="route.py">from typing import Literal, TypedDict
+
+from langgraph.graph import END, START, StateGraph
+
+
+class State(TypedDict):
+    question: str
+    route: str
+
+
+def classify(state: State) -> dict:
+    route = "billing" if "退款" in state["question"] else "general"
+    return {"route": route}
+
+
+def billing(state: State) -> dict:
+    return {"question": state["question"] + " → 退款流程"}
+
+
+def general(state: State) -> dict:
+    return {"question": state["question"] + " → 通用回答"}
+
+
+def pick(state: State) -> Literal["billing", "general"]:
+    return state["route"]  # type: ignore[return-value]
+
+
+builder = StateGraph(State)
+builder.add_node("classify", classify)
+builder.add_node("billing", billing)
+builder.add_node("general", general)
+builder.add_edge(START, "classify")
+builder.add_conditional_edges("classify", pick, ["billing", "general"])
+builder.add_edge("billing", END)
+builder.add_edge("general", END)
+
+graph = builder.compile()
+print(graph.invoke({"question": "我要退款", "route": ""}))</pre>
+
+        <h2 id="node">节点：输入 state，输出 partial state</h2>
+        <p>
+          节点就是一个普通函数（或 async 函数），第一个参数是当前 state，返回值是要合并的字段。
+          节点名在 <code>add_node</code>
+          <span class="src" data-src="libs/langgraph/langgraph/graph/state.py:376">state.py:376</span>
+          时注册，之后所有边都引用这个名字。
+        </p>
+        <div class="callout tip">
+          <span class="ct">节点不要返回完整 state</span>
+          <p>
+            只返回你改的字段。返回完整 state 会把没改的字段也写一遍，
+            在并行场景下容易触发「同一字段被多个节点更新」的冲突。
+          </p>
+        </div>
+
+        <h2 id="edge">边：普通边与条件边</h2>
+        <p>
+          普通边用 <code>add_edge</code>
+          <span class="src" data-src="libs/langgraph/langgraph/graph/state.py:928">state.py:928</span>，
+          条件边用 <code>add_conditional_edges</code>
+          <span class="src" data-src="libs/langgraph/langgraph/graph/state.py:982">state.py:982</span>。
+          条件边包含三部分：源节点、路由函数、路径映射（可选）。
+        </p>
+        <pre data-lang="python" data-file="路径映射">builder.add_conditional_edges(
+    "classify",
+    pick,
+    {
+        "billing": "billing",
+        "general": "general",
+        "unknown": END,
+    },
+)</pre>
+        <p>
+          路由函数返回的是「路径 key」，映射把它翻译成节点名。不写映射时，
+          返回值必须直接等于节点名。入口与出口也可以显式设置：
+          <code>set_entry_point</code>
+          <span class="src" data-src="libs/langgraph/langgraph/graph/state.py:1079">state.py:1079</span>、
+          <code>set_finish_point</code>
+          <span class="src" data-src="libs/langgraph/langgraph/graph/state.py:1116">state.py:1116</span>。
+        </p>
+
+        <h2 id="loop">循环：什么时候必须停</h2>
+        <p>
+          条件边可以指回上游，形成循环。图不会自动判断「该停了」，
+          你需要在路由函数里给出终止路径，同时依赖框架的递归上限兜底。
+          超过上限会抛 <code>GraphRecursionError</code>
+          <span class="src" data-src="libs/langgraph/langgraph/errors.py:69">errors.py:69</span>。
+        </p>
+        <pre data-lang="python" data-file="带计数的循环">class LoopState(TypedDict):
+    count: int
+    answer: str
+
+
+def work(state: LoopState) -> dict:
+    return {"count": state["count"] + 1, "answer": "done"}
+
+
+def should_continue(state: LoopState) -> str:
+    return "work" if state["count"] < 3 else END</pre>
+        <div class="callout warn">
+          <span class="ct">递归上限不是业务停止条件</span>
+          <p>
+            上限是兜底，不是设计。用业务字段（次数、状态、是否拿到结果）决定是否继续；
+            否则你会得到「跑满上限才报错」的慢失败。
+          </p>
+        </div>
+
+        <h2 id="pitfalls">陷阱与窍门</h2>
+        <div class="callout warn">
+          <span class="ct">路由函数返回了节点名之外的值</span>
+          <p><strong>你会看到</strong>编译或运行时提示无效路径。<strong>因为</strong>返回值没有对应映射。<strong>改成</strong>补齐映射，或让返回值严格等于节点名。</p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">条件边从 START 出发</span>
+          <p><strong>你会看到</strong>图不知道入口该走哪。<strong>因为</strong>START 的路由通常用 <code>add_conditional_edges(START, ...)</code>，但要确保每个分支都能到 END。<strong>改成</strong>先用一个入口节点收口，再加条件边。</p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">循环里没有更新判断字段</span>
+          <p><strong>你会看到</strong>永远停不下来。<strong>因为</strong>路由函数读的字段一直没变。<strong>改成</strong>在节点里更新计数或状态，再让路由读它。</p>
+        </div>
+
+        <h2 id="quiz">自检三问</h2>
+        <ol>
+          <li>条件边的路由函数返回什么？路径映射解决什么问题？</li>
+          <li>为什么节点只应返回 partial state？</li>
+          <li>循环的停止条件应该写在哪一层？递归上限扮演什么角色？</li>
+        </ol>
+
+        <h2 id="exercise">20 分钟动手练习</h2>
+        <ol>
+          <li>把二选一路由改成三路：退款、物流、其他，并给每一路一个节点。</li>
+          <li>让 <code>classify</code> 返回一个不存在的路由值，观察报错并补上映射。</li>
+          <li>写一个最多循环 5 次的图，打印每轮 <code>count</code>，确认第 5 次后走 END。</li>
+        </ol>
+
+        <h2 id="next">下一步</h2>
+        <p>
+          下一章 <a href="04-command-send.html">04 Command、Send 与并行</a>：
+          当「下一步」和「状态更新」需要同时发生，或者一条输入要分给 N 个节点时，条件边就不够用了。
+        </p>
+
+      </article>
+    </main>
+    <script src="../assets/nav.js"></script>
+    <script src="../assets/mini-highlight.js"></script>
+    <script src="../assets/site.js"></script>
+  </body>
+</html>

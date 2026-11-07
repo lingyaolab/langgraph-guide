@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="LangGraph 多 Agent 的三种拓扑、Supervisor 路由、Swarm 的 handoff、Command 转移控制权、共享 state 边界与成本。" />
+    <meta property="og:type" content="article" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:site_name" content="LangGraph 1.2.20 学习站" />
+    <meta property="og:title" content="14 多 Agent：Supervisor、Swarm 与 handoff · LangGraph 1.2.20 学习站" />
+    <meta property="og:description" content="LangGraph 多 Agent 的三种拓扑、Supervisor 路由、Swarm 的 handoff、Command 转移控制权、共享 state 边界与成本。" />
+    <title>14 多 Agent：Supervisor、Swarm 与 handoff · LangGraph 1.2.20 学习站</title>
+    <script>
+      try {
+        var t = localStorage.getItem("as-learn-theme");
+        if (!t) t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    </script>
+    <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
+    <link rel="stylesheet" href="../assets/base.css" />
+    <link rel="stylesheet" href="../assets/diagrams.css" />
+  </head>
+  <body data-page="14-multi-agent" data-root="..">
+    <main>
+      <article class="article">
+
+        <h1>14 · 多 Agent：Supervisor、Swarm 与 handoff</h1>
+        <p class="lede">
+          多 Agent 不是「多个模型一起跑就更强」。它解决的是<strong>职责隔离</strong>：
+          每个 Agent 有自己的提示词、工具与上下文，由一个路由层决定谁接手。
+          这一章讲三种拓扑与它们的失败边界。
+        </p>
+
+        <h2 id="goals">读完你能做到</h2>
+        <ul class="goals">
+          <li>用 Supervisor 模式让一个路由 Agent 决定交给哪个 Worker</li>
+          <li>用 <code>Command(goto=...)</code> 做 handoff，把控制权转给另一个节点</li>
+          <li>说清共享 state 与独立 state 的边界</li>
+          <li>估算多 Agent 的 token 成本与失败面</li>
+        </ul>
+
+        <h2 id="why">先说为什么：多 Agent 不是并行加速</h2>
+        <p>
+          如果两个 Agent 做同一件事，多 Agent 只会让成本翻倍。
+          它真正有用的场景是：不同角色需要不同工具 / 提示词 / 权限，
+          或者需要「一个负责规划、一个负责执行、一个负责审查」。
+        </p>
+
+        <h2 id="minimal">最小可跑：一个 Supervisor 两个 Worker</h2>
+        <pre data-lang="python" data-file="supervisor.py">from typing import Literal, TypedDict
+
+from langgraph.graph import END, START, StateGraph
+
+
+class State(TypedDict):
+    task: str
+    next: str
+    result: str
+
+
+def supervisor(state: State) -> dict:
+    if "代码" in state["task"]:
+        return {"next": "coder"}
+    return {"next": "researcher"}
+
+
+def coder(state: State) -> dict:
+    return {"result": "代码已完成", "next": "supervisor"}
+
+
+def researcher(state: State) -> dict:
+    return {"result": "资料已整理", "next": "supervisor"}
+
+
+def route(state: State) -> Literal["coder", "researcher", "supervisor"]:
+    return state["next"]  # type: ignore[return-value]
+
+
+builder = StateGraph(State)
+builder.add_node("supervisor", supervisor)
+builder.add_node("coder", coder)
+builder.add_node("researcher", researcher)
+builder.add_edge(START, "supervisor")
+builder.add_conditional_edges("supervisor", route, ["coder", "researcher", "supervisor"])
+builder.add_conditional_edges("coder", route, ["supervisor"])
+builder.add_conditional_edges("researcher", route, ["supervisor"])
+
+graph = builder.compile()
+print(graph.invoke({"task": "写一段排序代码", "next": "", "result": ""}))</pre>
+        <p>
+          这是一个最小 Supervisor：路由 Agent 只看任务，Worker 干完把 <code>next</code>
+          设回 supervisor。真实实现里，路由决策通常由模型做，而不是字符串匹配。
+        </p>
+
+        <h2 id="patterns">三种拓扑：路由、交接、团队</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>拓扑</th><th>控制权</th><th>适合</th><th>风险</th></tr></thead>
+            <tbody>
+              <tr><td>Supervisor</td><td>中心路由一直掌握</td><td>任务分派、审查</td><td>路由成为瓶颈</td></tr>
+              <tr><td>Swarm / handoff</td><td>控制权在 Agent 间转移</td><td>多轮协作、接力</td><td>容易循环、难追踪</td></tr>
+              <tr><td>Team / 固定流水线</td><td>图结构决定顺序</td><td>稳定流程</td><td>不够灵活</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="handoff">handoff：控制权怎么转</h2>
+        <p>
+          handoff 的本质是一个节点返回 <code>Command(goto="另一个 Agent")</code>，
+          同时更新共享 state 里「现在谁负责」。它不需要中心路由，
+          但需要严格的退出条件与最大轮次。
+        </p>
+        <pre data-lang="python" data-file="handoff.py">from langgraph.types import Command
+
+
+def researcher(state: dict) -> Command:
+    return Command(
+        update={"owner": "coder", "notes": "资料在这里"},
+        goto="coder",
+    )</pre>
+        <p>
+          <code>Command</code>
+          <span class="src" data-src="libs/langgraph/langgraph/types.py:843">types.py:843</span>
+          同时改 state 与跳转；这比「先写 state，再靠条件边读」少一次路由决策。
+        </p>
+
+        <h2 id="cost">成本与失败边界</h2>
+        <ul>
+          <li>每个 Agent 都有自己的系统提示与上下文，token 成本按 Agent 数叠加。</li>
+          <li>共享 messages 会让每个 Agent 看到全部历史；独立 state 则需要显式传递。</li>
+          <li>handoff 循环必须有最大轮次或明确终止条件，否则会烧穿预算。</li>
+          <li>路由错误比单 Agent 更难发现：先看「谁最后改了 state」，再看路由日志。</li>
+        </ul>
+
+        <h2 id="pitfalls">陷阱与窍门</h2>
+        <div class="callout warn">
+          <span class="ct">两个 Agent 共享全部 messages</span>
+          <p><strong>你会看到</strong>上下文迅速膨胀、角色混淆。<strong>因为</strong>每个 Agent 都看到别人的完整推理。<strong>改成</strong>只共享必要字段，或给每个 Agent 单独的 messages 通道。</p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">handoff 没有终止条件</span>
+          <p><strong>你会看到</strong>两个 Agent 互相踢皮球。<strong>因为</strong>没有最大轮次或完成判定。<strong>改成</strong>加 <code>round</code> 计数与 END 路径。</p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">把多 Agent 当并行加速</span>
+          <p><strong>你会看到</strong>成本翻倍但延迟没降。<strong>因为</strong>多数拓扑是串行委派。<strong>改成</strong>需要并行时用 Send / 并行节点，不要假装多 Agent 是并行。</p>
+        </div>
+
+        <h2 id="quiz">自检三问</h2>
+        <ol>
+          <li>Supervisor 与 handoff 的控制权差异是什么？</li>
+          <li>多 Agent 共享 messages 会带来什么后果？</li>
+          <li>为什么多 Agent 必须有最大轮次？</li>
+        </ol>
+
+        <h2 id="exercise">20 分钟动手练习</h2>
+        <ol>
+          <li>把最小 Supervisor 的路由改成模型决策，观察失败时的路由。</li>
+          <li>用 Command 实现 researcher → coder 的 handoff，加一个 round 计数。</li>
+          <li>把共享 messages 改成独立字段，比较两种设计的上下文大小。</li>
+        </ol>
+
+        <h2 id="next">下一步</h2>
+        <p>
+          下一章 <a href="15-testing-observability.html">15 测试与可观测性</a>：
+          多 Agent 的行为更难猜，先把断言与追踪搭起来。
+        </p>
+
+      </article>
+    </main>
+    <script src="../assets/nav.js"></script>
+    <script src="../assets/mini-highlight.js"></script>
+    <script src="../assets/site.js"></script>
+  </body>
+</html>

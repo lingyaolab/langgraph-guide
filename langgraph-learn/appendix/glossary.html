@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="LangGraph 核心术语：StateGraph、Pregel、Channel、Checkpointer、Store、Command、Send、interrupt、thread_id 等的中英对照。" />
+    <meta property="og:type" content="article" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:site_name" content="LangGraph 1.2.20 学习站" />
+    <meta property="og:title" content="A 术语表：中英对照 + 一句话直觉 · LangGraph 1.2.20 学习站" />
+    <meta property="og:description" content="LangGraph 核心术语：StateGraph、Pregel、Channel、Checkpointer、Store、Command、Send、interrupt、thread_id 等的中英对照。" />
+    <title>A 术语表：中英对照 + 一句话直觉 · LangGraph 1.2.20 学习站</title>
+    <script>
+      try {
+        var t = localStorage.getItem("as-learn-theme");
+        if (!t) t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    </script>
+    <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
+    <link rel="stylesheet" href="../assets/base.css" />
+    <link rel="stylesheet" href="../assets/diagrams.css" />
+  </head>
+  <body data-page="glossary" data-root="..">
+    <main>
+      <article class="article">
+
+        <h1>附录 A · 术语表</h1>
+        <p class="lede">
+          这些词在官方文档里经常混着用。这一页只给一句话直觉，不追求完整定义；
+          真正理解要靠对应章节的代码。
+        </p>
+
+        <h2 id="how">怎么用这张表</h2>
+        <ul class="goals">
+          <li>读到一个陌生词，先在这里找一句话直觉。</li>
+          <li>如果一句话不够，按最后一列回到章节。</li>
+          <li>不要背定义，先跑一遍对应章节的最小例子。</li>
+        </ul>
+
+        <h2 id="core">图与状态</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>术语</th><th>一句话直觉</th><th>章节</th></tr></thead>
+            <tbody>
+              <tr><td><code>StateGraph</code></td><td>声明状态、节点与边的建图器；编译后才可执行。</td><td>01</td></tr>
+              <tr><td><code>CompiledStateGraph</code></td><td>编译后的执行器，负责调度、合并与持久化。</td><td>01</td></tr>
+              <tr><td>Node</td><td>读 state、返回 partial state 的函数。</td><td>03</td></tr>
+              <tr><td>Edge</td><td>节点之间的固定跳转。</td><td>03</td></tr>
+              <tr><td>Conditional Edge</td><td>用路由函数决定下一步。</td><td>03</td></tr>
+              <tr><td>Reducer</td><td>同一字段的旧值与新值怎么合并。</td><td>02</td></tr>
+              <tr><td><code>Annotated</code></td><td>把 reducer 写到字段类型上的语法。</td><td>02</td></tr>
+              <tr><td><code>add_messages</code></td><td>消息列表的专用 reducer：按 id 去重追加。</td><td>02</td></tr>
+              <tr><td>Superstep</td><td>执行器的一次调度批次；checkpoint 按它写。</td><td>05</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="runtime">运行时与持久化</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>术语</th><th>一句话直觉</th><th>章节</th></tr></thead>
+            <tbody>
+              <tr><td><code>Pregel</code></td><td>LangGraph 的底层执行引擎。</td><td>D</td></tr>
+              <tr><td>Channel</td><td>状态字段的运行时容器，决定合并语义。</td><td>02</td></tr>
+              <tr><td><code>Checkpointer</code></td><td>按 thread 保存 state 快照，用于恢复与时间旅行。</td><td>05</td></tr>
+              <tr><td><code>thread_id</code></td><td>一条会话的标识；换 id 就是新会话。</td><td>05</td></tr>
+              <tr><td><code>checkpoint_id</code></td><td>某个具体快照的标识，用于回放与分叉。</td><td>06</td></tr>
+              <tr><td><code>Store</code></td><td>跨 thread 的长期记忆，按 namespace / key 存。</td><td>13</td></tr>
+              <tr><td><code>Command</code></td><td>同时更新 state 与跳转的返回值。</td><td>04</td></tr>
+              <tr><td><code>Send</code></td><td>运行时动态 fan-out 的一组任务。</td><td>04</td></tr>
+              <tr><td><code>interrupt</code></td><td>在节点里暂停图，等人用 <code>Command(resume=...)</code> 恢复。</td><td>07</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="agent">Agent 与工具</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>术语</th><th>一句话直觉</th><th>章节</th></tr></thead>
+            <tbody>
+              <tr><td><code>ToolNode</code></td><td>预构建节点：执行 <code>tool_calls</code> 并写回 <code>ToolMessage</code>。</td><td>11</td></tr>
+              <tr><td><code>tools_condition</code></td><td>预构建路由：有工具调用去工具节点，否则结束。</td><td>11</td></tr>
+              <tr><td><code>create_react_agent</code></td><td>把模型 + 工具 + 条件边打包的预构建 Agent；1.2.20 为维护模式。</td><td>12</td></tr>
+              <tr><td>Supervisor</td><td>中心路由 Agent，决定把任务交给哪个 Worker。</td><td>14</td></tr>
+              <tr><td>handoff</td><td>把控制权从一个 Agent 转给另一个。</td><td>14</td></tr>
+              <tr><td><code>ToolMessage</code></td><td>工具结果回到模型的消息格式，带 <code>tool_call_id</code>。</td><td>11</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="ops">工程与部署</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>术语</th><th>一句话直觉</th><th>章节</th></tr></thead>
+            <tbody>
+              <tr><td><code>langgraph.json</code></td><td>告诉 CLI / Server 图在哪、依赖什么。</td><td>16</td></tr>
+              <tr><td><code>langgraph dev</code></td><td>本地开发服务器。</td><td>16</td></tr>
+              <tr><td><code>langgraph up</code></td><td>生产形态的容器化启动。</td><td>16</td></tr>
+              <tr><td>Readiness</td><td>依赖是否可用，能接流量吗。</td><td>16</td></tr>
+              <tr><td>Liveness</td><td>进程是否活着。</td><td>16</td></tr>
+              <tr><td>Trace</td><td>一次运行中图、节点、模型、工具的完整调用树。</td><td>15</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="next">下一步</h2>
+        <p>回到 <a href="../chapters/00-study-map.html">00 学习地图</a>，或直接看 <a href="api-cheatsheet.html">附录 C API 速查</a>。</p>
+
+      </article>
+    </main>
+    <script src="../assets/nav.js"></script>
+    <script src="../assets/mini-highlight.js"></script>
+    <script src="../assets/site.js"></script>
+  </body>
+</html>

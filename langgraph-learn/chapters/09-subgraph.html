@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="LangGraph 子图的两种接入方式、状态 schema 的共享与转换、命名空间与调试。" />
+    <meta property="og:type" content="article" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:site_name" content="LangGraph 1.2.20 学习站" />
+    <meta property="og:title" content="09 子图与模块化：把一张图装进另一张图 · LangGraph 1.2.20 学习站" />
+    <meta property="og:description" content="LangGraph 子图的两种接入方式、状态 schema 的共享与转换、命名空间与调试。" />
+    <title>09 子图与模块化：把一张图装进另一张图 · LangGraph 1.2.20 学习站</title>
+    <script>
+      try {
+        var t = localStorage.getItem("as-learn-theme");
+        if (!t) t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    </script>
+    <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
+    <link rel="stylesheet" href="../assets/base.css" />
+    <link rel="stylesheet" href="../assets/diagrams.css" />
+  </head>
+  <body data-page="09-subgraph" data-root="..">
+    <main>
+      <article class="article">
+
+        <h1>09 · 子图与模块化：把一张图装进另一张图</h1>
+        <p class="lede">
+          一张图超过十几个节点后，调试和复用都会变难。子图让你把一组节点封装成「一个节点」，
+          父图只关心它的输入输出，不关心内部怎么走。
+        </p>
+
+        <h2 id="goals">读完你能做到</h2>
+        <ul class="goals">
+          <li>把编译后的子图直接当节点加进父图</li>
+          <li>在父图与子图之间共享 state，或做字段映射</li>
+          <li>从流式事件的命名空间看出「现在在哪个子图里」</li>
+          <li>判断什么时候该拆子图，什么时候只是多写了几个节点</li>
+        </ul>
+
+        <h2 id="why">先说为什么：一张图不该无限长</h2>
+        <p>
+          子图的价值不是「看起来模块化」，而是三件事：复用同一段流程、隔离状态 schema、
+          在流式与调试里形成清晰的命名空间。没有这三件事，拆子图只会增加跳转成本。
+        </p>
+
+        <h2 id="minimal">最小可跑：父图调用子图</h2>
+        <pre data-lang="python" data-file="subgraph.py">from typing import TypedDict
+
+from langgraph.graph import END, START, StateGraph
+
+
+class SubState(TypedDict):
+    text: str
+
+
+def upper(state: SubState) -> dict:
+    return {"text": state["text"].upper()}
+
+
+sub = StateGraph(SubState)
+sub.add_node("upper", upper)
+sub.add_edge(START, "upper")
+sub.add_edge("upper", END)
+sub_graph = sub.compile()
+
+
+class ParentState(TypedDict):
+    text: str
+
+
+parent = StateGraph(ParentState)
+parent.add_node("normalize", lambda s: {"text": s["text"].strip()})
+parent.add_node("upper", sub_graph)   # 编译后的图就是一个节点
+parent.add_edge(START, "normalize")
+parent.add_edge("normalize", "upper")
+parent.add_edge("upper", END)
+
+print(parent.compile().invoke({"text": "  hello  "}))</pre>
+        <p>
+          子图不需要额外的包装器；编译后的图本身就是可调用节点。
+          父图只要求子图的输入 / 输出能与父图 state 对上。
+        </p>
+
+        <h2 id="schema">状态怎么传：共享、映射与隔离</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>方式</th><th>行为</th><th>适合</th></tr></thead>
+            <tbody>
+              <tr><td>共享同一个 State</td><td>父子图读写同一组字段</td><td>流程强相关、字段少</td></tr>
+              <tr><td>子图独立 schema</td><td>父图只传子图声明的字段</td><td>复用、隔离内部状态</td></tr>
+              <tr><td>显式映射函数</td><td>在节点里把父 state 转成子 state，再把结果转回</td><td>字段名或结构不同</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          如果父子图字段同名但语义不同，优先用显式映射，而不是硬共享。
+          子图的内部字段不应该污染父图的 checkpoint。
+        </p>
+
+        <h2 id="debug">命名空间与调试</h2>
+        <p>
+          子图执行时，事件会带命名空间（例如 <code>parent:sub</code>）。
+          流式事件、checkpoint 与错误栈都会带上它；看到命名空间就知道问题在父图还是子图。
+          子图内部也可以有自己的 checkpointer，但通常由父图统一管理。
+        </p>
+        <div class="callout tip">
+          <span class="ct">先拆「可复用」，再拆「看起来大」</span>
+          <p>
+            一段流程被两个父图复用，或需要独立测试时，才拆子图。
+            只是为了减少文件长度，普通函数更轻。
+          </p>
+        </div>
+
+        <h2 id="pitfalls">陷阱与窍门</h2>
+        <div class="callout warn">
+          <span class="ct">子图 schema 与父图不兼容</span>
+          <p><strong>你会看到</strong>运行时缺少字段或类型错误。<strong>因为</strong>父图传进去的 dict 不满足子图 State。<strong>改成</strong>用映射函数补齐字段，或统一 schema。</p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">父子图各挂一个 checkpointer</span>
+          <p><strong>你会看到</strong>恢复点混乱。<strong>因为</strong>两层都在写自己的 checkpoint。<strong>改成</strong>通常只让父图挂，子图作为纯节点执行。</p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">在子图里用全局变量传状态</span>
+          <p><strong>你会看到</strong>并行或重放时结果不稳定。<strong>因为</strong>全局变量不进入 checkpoint。<strong>改成</strong>所有需要恢复的状态都放进 State。</p>
+        </div>
+
+        <h2 id="quiz">自检三问</h2>
+        <ol>
+          <li>编译后的子图为什么可以直接当节点用？</li>
+          <li>父子图共享 schema 与独立 schema 各适合什么场景？</li>
+          <li>命名空间在调试里解决什么问题？</li>
+        </ol>
+
+        <h2 id="exercise">20 分钟动手练习</h2>
+        <ol>
+          <li>把 03 章的退款 / 通用路由拆成一个子图，父图只负责入口与退出。</li>
+          <li>给子图加一个父图没有的字段，观察父图最终 state 是否包含它。</li>
+          <li>用 <code>stream_mode="updates"</code> 跑父子图，记录事件里的命名空间。</li>
+        </ol>
+
+        <h2 id="next">下一步</h2>
+        <p>
+          下一章 <a href="10-retry-cache.html">10 重试、缓存与节点控制</a>：
+          图能拆能拼之后，开始处理失败与重复调用。
+        </p>
+
+      </article>
+    </main>
+    <script src="../assets/nav.js"></script>
+    <script src="../assets/mini-highlight.js"></script>
+    <script src="../assets/site.js"></script>
+  </body>
+</html>
