@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="完整案例：Supervisor + Researcher + Writer + Reviewer，用 Command handoff 与轮次上限做一次带返工的研究任务。" />
+    <meta property="og:type" content="article" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:site_name" content="LangGraph 1.2.20 学习站" />
+    <meta property="og:title" content="26 案例四：Supervisor 研究助手 · LangGraph 1.2.20 学习站" />
+    <meta property="og:description" content="完整案例：Supervisor + Researcher + Writer + Reviewer，用 Command handoff 与轮次上限做一次带返工的研究任务。" />
+    <title>26 案例四：Supervisor 研究助手 · LangGraph 1.2.20 学习站</title>
+    <script>
+      try {
+        var t = localStorage.getItem("as-learn-theme");
+        if (!t) t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    </script>
+    <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg?v=1.2.0" />
+    <link rel="stylesheet" href="../assets/base.css?v=1.1.0" />
+    <link rel="stylesheet" href="../assets/diagrams.css?v=1.1.0" />
+  </head>
+  <body data-page="26-case-supervisor" data-root="..">
+    <main>
+      <article class="article">
+
+        <h1>26 · 案例四：Supervisor 研究助手</h1>
+        <p class="lede">
+          需求：一个研究任务，先查资料，再写初稿，最后审查；审查不通过要返工。
+          这个案例用 Supervisor 路由与 handoff，把多角色协作装进一张图。
+        </p>
+
+        <h2 id="goals">读完你能做到</h2>
+        <ul class="goals">
+          <li>用 Supervisor 决定下一步交给谁</li>
+          <li>用 <code>Command(update=..., goto=...)</code> 做 handoff</li>
+          <li>用轮次上限与验收条件防止无限返工</li>
+          <li>估算多 Agent 的 token 成本</li>
+        </ul>
+
+        <h2 id="why">先说为什么：多 Agent 是职责隔离</h2>
+        <p>
+          Researcher 需要检索工具，Writer 需要写作提示，Reviewer 需要审查标准。
+          把它们拆开，提示词与工具面更清晰；但每多一个 Agent，就多一份上下文与成本。
+        </p>
+
+        <h2 id="brief">案例：一次带返工的研究</h2>
+        <pre data-lang="text" data-file="流程">supervisor → researcher（查资料）
+           → writer（写初稿）
+           → reviewer（审查）
+           → 不通过：回到 writer（返工）
+           → 通过：END</pre>
+
+        <h2 id="graph">装配：共享 state 与轮次</h2>
+        <pre data-lang="python" data-file="graph.py">from typing import Annotated, Literal, TypedDict
+from operator import add
+
+from langgraph.graph import END, START, StateGraph
+from langgraph.types import Command
+
+
+class State(TypedDict):
+    task: str
+    notes: Annotated[list[str], add]
+    draft: str
+    review: str
+    owner: str
+    rounds: int
+
+
+def supervisor(state: State) -&gt; Command:
+    if state["rounds"] &gt;= 6:
+        return Command(update={"owner": "END"}, goto=END)
+    if not state["notes"]:
+        return Command(update={"owner": "researcher"}, goto="researcher")
+    if not state["draft"]:
+        return Command(update={"owner": "writer"}, goto="writer")
+    if state["review"] != "pass":
+        return Command(update={"owner": "writer", "rounds": state["rounds"] + 1}, goto="writer")
+    return Command(update={"owner": "END"}, goto=END)
+
+
+def researcher(state: State) -&gt; Command:
+    return Command(update={"notes": ["资料 A", "资料 B"]}, goto="supervisor")
+
+
+def writer(state: State) -&gt; Command:
+    return Command(update={"draft": "基于资料的初稿"}, goto="reviewer")
+
+
+def reviewer(state: State) -&gt; Command:
+    ok = len(state["draft"]) &gt; 5
+    return Command(update={"review": "pass" if ok else "revise"}, goto="supervisor")
+
+
+builder = StateGraph(State)
+for name, fn in [("supervisor", supervisor), ("researcher", researcher), ("writer", writer), ("reviewer", reviewer)]:
+    builder.add_node(name, fn)
+builder.add_edge(START, "supervisor")
+builder.add_edge("supervisor", END)
+
+graph = builder.compile()</pre>
+        <p>
+          Supervisor 每次被调用都重新看 state，决定下一步。Worker 干完回到 supervisor，
+          而不是直接连下一个 Worker；这样路由逻辑集中在一处。
+        </p>
+
+        <h2 id="handoff">handoff：控制权怎么转</h2>
+        <p>
+          <code>Command(update=..., goto=...)</code>
+          <span class="src" data-src="libs/langgraph/langgraph/types.py:843">types.py:843</span>
+          同时写状态与跳转。它适合「我知道下一步是谁」的场景；
+          如果只是根据 state 选边，条件边更简单。
+        </p>
+
+        <h2 id="cost">成本与失败边界</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>风险</th><th>控制</th></tr></thead>
+            <tbody>
+              <tr><td>无限返工</td><td><code>rounds</code> 上限 + 明确验收</td></tr>
+              <tr><td>上下文爆炸</td><td>只共享 notes / draft，不共享完整推理</td></tr>
+              <tr><td>成本翻倍</td><td>限制 Agent 数，先单 Agent 验证</td></tr>
+              <tr><td>路由错</td><td>Supervisor 用结构化输出 / 规则</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="pitfalls">陷阱与窍门</h2>
+        <div class="callout warn">
+          <span class="ct">Worker 直接连 Worker</span>
+          <p><strong>你会看到</strong>路由逻辑散落，难以追踪。<strong>因为</strong>没有中心决策。<strong>改成</strong>Worker 回到 supervisor。</p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">没有轮次上限</span>
+          <p><strong>你会看到</strong>writer 与 reviewer 互相踢皮球。<strong>因为</strong>验收条件不稳定。<strong>改成</strong>加 rounds 与 END。</p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">共享全部 messages</span>
+          <p><strong>你会看到</strong>每个 Agent 都看到别人的完整推理。<strong>因为</strong>共享 state 太大。<strong>改成</strong>只共享 notes / draft。</p>
+        </div>
+
+        <h2 id="quiz">自检三问</h2>
+        <ol>
+          <li>为什么 Worker 应该回到 Supervisor，而不是直接连下一个 Worker？</li>
+          <li>返工循环靠什么停止？</li>
+          <li>多 Agent 共享哪些字段最合适？</li>
+        </ol>
+
+        <h2 id="exercise">40 分钟动手练习</h2>
+        <ol>
+          <li>让 reviewer 第一次返回 revise，观察 writer 返工后通过。</li>
+          <li>把 rounds 上限改成 2，确认超限后结束。</li>
+          <li>把 notes 改成工具检索，测量一次任务的 token 消耗。</li>
+        </ol>
+
+        <h2 id="next">下一步</h2>
+        <p>
+          下一章 <a href="27-case-production.html">27 案例五：生产部署</a>：
+          把案例二、三接到 Postgres、SSE 与多租户服务里。
+        </p>
+
+      </article>
+    </main>
+    <script src="../assets/nav.js?v=1.1.0"></script>
+    <script src="../assets/mini-highlight.js?v=1.1.0"></script>
+    <script src="../assets/site.js?v=1.1.0"></script>
+  </body>
+</html>

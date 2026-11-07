@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="完整案例：checkpoint + Store + 检索节点，做一个能记住用户偏好的多轮知识库客服。" />
+    <meta property="og:type" content="article" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:site_name" content="LangGraph 1.2.20 学习站" />
+    <meta property="og:title" content="24 案例二：多轮知识库客服 · LangGraph 1.2.20 学习站" />
+    <meta property="og:description" content="完整案例：checkpoint + Store + 检索节点，做一个能记住用户偏好的多轮知识库客服。" />
+    <title>24 案例二：多轮知识库客服 · LangGraph 1.2.20 学习站</title>
+    <script>
+      try {
+        var t = localStorage.getItem("as-learn-theme");
+        if (!t) t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    </script>
+    <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg?v=1.2.0" />
+    <link rel="stylesheet" href="../assets/base.css?v=1.1.0" />
+    <link rel="stylesheet" href="../assets/diagrams.css?v=1.1.0" />
+  </head>
+  <body data-page="24-case-kb-service" data-root="..">
+    <main>
+      <article class="article">
+
+        <h1>24 · 案例二：多轮知识库客服</h1>
+        <p class="lede">
+          需求：用户连续提问，系统能检索知识库、记住用户偏好、每轮回答带引用。
+          这个案例把 checkpointer（短期记忆）、Store（长期偏好）与检索节点组合起来。
+        </p>
+
+        <h2 id="goals">读完你能做到</h2>
+        <ul class="goals">
+          <li>用同一个 <code>thread_id</code> 跑多轮对话</li>
+          <li>用 Store 记住跨 thread 的用户偏好</li>
+          <li>把检索做成节点，并让回答带引用</li>
+          <li>区分「会话历史」「用户偏好」「知识库」三类数据</li>
+        </ul>
+
+        <h2 id="why">先说为什么：不要把偏好塞进 messages</h2>
+        <p>
+          偏好会随着对话被压缩、被裁掉；而每轮都重新说一遍又浪费 token。
+          正确做法是：对话历史进 checkpointer，偏好进 Store，知识库进检索服务。
+        </p>
+
+        <h2 id="brief">案例：一轮问答</h2>
+        <pre data-lang="text" data-file="请求">user_id=alice, thread_id=t-1
+用户：退款政策是什么？
+→ 读偏好（简洁）
+→ 检索 refund.md
+→ 回答 + 引用</pre>
+
+        <h2 id="architecture">架构：读偏好 → 检索 → 回答</h2>
+        <pre data-lang="text" data-file="图">START
+  → load_preference（Store）
+  → retrieve（知识库）
+  → answer（模型 / 假模型）
+  → END</pre>
+
+        <h2 id="graph">装配：State、Store 与 checkpointer</h2>
+        <pre data-lang="python" data-file="graph.py">from typing import Annotated, TypedDict
+from operator import add
+
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph import END, START, StateGraph
+from langgraph.store.memory import InMemoryStore
+
+
+class State(TypedDict):
+    messages: Annotated[list, add]
+    question: str
+    citations: Annotated[list[str], add]
+    tone: str
+
+
+store = InMemoryStore()
+
+
+def load_preference(state: State, config, store) -&gt; dict:
+    user_id = config["configurable"]["user_id"]
+    item = store.get(("users", user_id), "preference")
+    return {"tone": item.value["tone"] if item else "default"}
+
+
+def retrieve(state: State) -&gt; dict:
+    # 换成真实向量库；这里用固定片段模拟
+    return {"citations": ["refund.md"], "question": state["question"]}
+
+
+def answer(state: State) -&gt; dict:
+    return {"messages": [("ai", f'[{state["tone"]}] 根据 refund.md：7 天无理由退款')]}
+
+
+builder = StateGraph(State)
+builder.add_node("load_preference", load_preference)
+builder.add_node("retrieve", retrieve)
+builder.add_node("answer", answer)
+builder.add_edge(START, "load_preference")
+builder.add_edge("load_preference", "retrieve")
+builder.add_edge("retrieve", "answer")
+builder.add_edge("answer", END)
+
+graph = builder.compile(checkpointer=InMemorySaver(), store=store)</pre>
+        <p>
+          <code>store</code> 与 <code>config</code> 是节点可请求的运行时参数；
+          <code>compile(store=...)</code> 之后框架会注入。
+        </p>
+
+        <h2 id="multi-turn">多轮：同一个 thread</h2>
+        <pre data-lang="python" data-file="调用">config = {"configurable": {"thread_id": "t-1", "user_id": "alice"}}
+
+graph.invoke({"messages": [("user", "退款政策？")], "question": "退款", "citations": [], "tone": ""}, config)
+graph.invoke({"messages": [("user", "那运费呢？")], "question": "运费", "citations": [], "tone": ""}, config)</pre>
+        <p>
+          第二轮会自动加载第一轮 checkpoint；换一个 <code>thread_id</code> 就是新会话，
+          但同一个 <code>user_id</code> 仍然共享 Store 偏好。
+        </p>
+
+        <h2 id="stream">流式与引用</h2>
+        <p>
+          前端至少需要「引用」与「token」两类事件。先发 citations，再发 token：
+          用户不必等回答结束才知道来源。
+        </p>
+        <pre data-lang="python" data-file="SSE 事件">yield {"event": "citations", "data": state["citations"]}
+for token in answer_stream:
+    yield {"event": "token", "data": token}</pre>
+
+        <h2 id="pitfalls">陷阱与窍门</h2>
+        <div class="callout warn">
+          <span class="ct">偏好存在 messages 里</span>
+          <p><strong>你会看到</strong>压缩后偏好消失。<strong>因为</strong>messages 会被裁剪。<strong>改成</strong>Store。</p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">换 thread 后偏好也丢了</span>
+          <p><strong>你会看到</strong>新会话回到默认语气。<strong>因为</strong>偏好被误放进了 checkpoint。<strong>改成</strong>Store 的 key 只按 user，不按 thread。</p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">检索每轮都重跑</span>
+          <p><strong>你会看到</strong>延迟与成本上涨。<strong>因为</strong>检索放在工具循环里。<strong>改成</strong>检索节点放循环外，或缓存结果。</p>
+        </div>
+
+        <h2 id="quiz">自检三问</h2>
+        <ol>
+          <li>会话历史、用户偏好、知识库分别存在哪里？</li>
+          <li>为什么偏好不能跟 thread_id 绑定？</li>
+          <li>引用事件应该什么时候发？</li>
+        </ol>
+
+        <h2 id="exercise">30 分钟动手练习</h2>
+        <ol>
+          <li>用两个 thread 跑同一用户，确认偏好共享、历史不共享。</li>
+          <li>把检索节点换成真实向量库，返回 2 条引用。</li>
+          <li>用假模型跑一轮，断言 citations 出现在回答之前。</li>
+        </ol>
+
+        <h2 id="next">下一步</h2>
+        <p>
+          下一章 <a href="25-case-approval.html">25 案例三：工单审批流</a>：
+          回答之外，再让图安全地执行有副作用的写操作。
+        </p>
+
+      </article>
+    </main>
+    <script src="../assets/nav.js?v=1.1.0"></script>
+    <script src="../assets/mini-highlight.js?v=1.1.0"></script>
+    <script src="../assets/site.js?v=1.1.0"></script>
+  </body>
+</html>

@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="完整案例：interrupt + checkpointer + 幂等键，做一个写操作前必须人工确认、失败可恢复的工单审批流。" />
+    <meta property="og:type" content="article" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:site_name" content="LangGraph 1.2.20 学习站" />
+    <meta property="og:title" content="25 案例三：工单审批流 · LangGraph 1.2.20 学习站" />
+    <meta property="og:description" content="完整案例：interrupt + checkpointer + 幂等键，做一个写操作前必须人工确认、失败可恢复的工单审批流。" />
+    <title>25 案例三：工单审批流 · LangGraph 1.2.20 学习站</title>
+    <script>
+      try {
+        var t = localStorage.getItem("as-learn-theme");
+        if (!t) t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    </script>
+    <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg?v=1.2.0" />
+    <link rel="stylesheet" href="../assets/base.css?v=1.1.0" />
+    <link rel="stylesheet" href="../assets/diagrams.css?v=1.1.0" />
+  </head>
+  <body data-page="25-case-approval" data-root="..">
+    <main>
+      <article class="article">
+
+        <h1>25 · 案例三：工单审批流</h1>
+        <p class="lede">
+          需求：客服可以创建退款工单，但创建前必须人工确认；确认后不能重复创建。
+          这个案例把 <code>interrupt</code>、checkpoint、幂等键与恢复接起来。
+        </p>
+
+        <h2 id="goals">读完你能做到</h2>
+        <ul class="goals">
+          <li>在节点里用 <code>interrupt</code> 暂停，等待人工确认</li>
+          <li>用同一个 <code>thread_id</code> + <code>Command(resume=...)</code> 恢复</li>
+          <li>用幂等键保证重复恢复不会重复创建工单</li>
+          <li>处理拒绝、超时与重复提交</li>
+        </ul>
+
+        <h2 id="why">先说为什么：写操作不能靠模型自觉</h2>
+        <p>
+          「创建工单」有副作用。模型可能误判、用户可能反悔、网络可能超时重试。
+          暂停让人确认，checkpoint 让暂停可恢复，幂等键让重试安全。
+        </p>
+
+        <h2 id="brief">案例：一次审批</h2>
+        <pre data-lang="text" data-file="流程">用户：帮我退款
+→ draft（生成工单草稿）
+→ approval（interrupt，等人）
+→ create（幂等创建）
+→ notify（通知）</pre>
+
+        <h2 id="graph">装配：审批与幂等</h2>
+        <pre data-lang="python" data-file="approval.py">from typing import TypedDict
+
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph import END, START, StateGraph
+from langgraph.types import Command, interrupt
+
+
+class State(TypedDict):
+    order_id: str
+    reason: str
+    approved: bool
+    ticket_id: str
+    idempotency_key: str
+
+
+def draft(state: State) -&gt; dict:
+    return {"idempotency_key": f'create-ticket:{state["order_id"]}'}
+
+
+def approval(state: State) -&gt; dict:
+    ok = interrupt({
+        "type": "approval",
+        "title": "创建退款工单",
+        "order_id": state["order_id"],
+        "reason": state["reason"],
+    })
+    return {"approved": bool(ok)}
+
+
+def create(state: State) -&gt; dict:
+    if not state["approved"]:
+        return {"ticket_id": ""}
+    # 真实场景：先按幂等键查，再创建
+    existing = ticket_db.find_by_key(state["idempotency_key"])
+    if existing:
+        return {"ticket_id": existing.id}
+    ticket = ticket_db.create(
+        order_id=state["order_id"],
+        reason=state["reason"],
+        idempotency_key=state["idempotency_key"],
+    )
+    return {"ticket_id": ticket.id}
+
+
+builder = StateGraph(State)
+builder.add_node("draft", draft)
+builder.add_node("approval", approval)
+builder.add_node("create", create)
+builder.add_edge(START, "draft")
+builder.add_edge("draft", "approval")
+builder.add_edge("approval", "create")
+builder.add_edge("create", END)
+
+graph = builder.compile(checkpointer=InMemorySaver())</pre>
+
+        <h2 id="resume">恢复：同一个 thread，带答案</h2>
+        <pre data-lang="python" data-file="调用">config = {"configurable": {"thread_id": "ticket-1"}}
+graph.invoke({"order_id": "SO-1", "reason": "质量问题", "approved": False, "ticket_id": "", "idempotency_key": ""}, config)
+
+# 人工确认后
+graph.invoke(Command(resume=True), config)
+print(graph.get_state(config).values["ticket_id"])</pre>
+
+        <h2 id="idempotent">幂等：重复恢复不重复创建</h2>
+        <p>
+          恢复可能被重试。创建前先按 <code>idempotency_key</code> 查一次，
+          已存在就返回原工单。这样即使节点重新进入，也不会多建一张。
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>场景</th><th>结果</th></tr></thead>
+            <tbody>
+              <tr><td>正常确认</td><td>创建一张工单</td></tr>
+              <tr><td>拒绝</td><td>不创建，返回空 ticket_id</td></tr>
+              <tr><td>恢复重试</td><td>查到原工单，返回同一个 id</td></tr>
+              <tr><td>换 thread</td><td>找不到暂停点，需从头</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="pitfalls">陷阱与窍门</h2>
+        <div class="callout warn">
+          <span class="ct">创建放在 interrupt 之前</span>
+          <p><strong>你会看到</strong>还没确认就建了工单，恢复时又建一次。<strong>因为</strong>节点会重新进入。<strong>改成</strong>副作用放到 interrupt 之后。</p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">恢复换了 thread</span>
+          <p><strong>你会看到</strong>找不到暂停点。<strong>因为</strong>中断按 thread 保存。<strong>改成</strong>同一个 config。</p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">没有幂等键</span>
+          <p><strong>你会看到</strong>重复恢复产生两张工单。<strong>因为</strong>节点可能重试。<strong>改成</strong>按业务主键查重。</p>
+        </div>
+
+        <h2 id="quiz">自检三问</h2>
+        <ol>
+          <li>为什么创建工单必须放在 interrupt 之后？</li>
+          <li>恢复时为什么不能换 thread_id？</li>
+          <li>幂等键用什么字段最合适？</li>
+        </ol>
+
+        <h2 id="exercise">30 分钟动手练习</h2>
+        <ol>
+          <li>跑一次确认与一次拒绝，观察 ticket_id 差异。</li>
+          <li>连续 resume 两次，确认只创建一张工单。</li>
+          <li>把 interrupt 前的草稿写库，观察恢复时是否重复写。</li>
+        </ol>
+
+        <h2 id="next">下一步</h2>
+        <p>
+          下一章 <a href="26-case-supervisor.html">26 案例四：Supervisor 研究助手</a>：
+          从单流程转到多角色协作。
+        </p>
+
+      </article>
+    </main>
+    <script src="../assets/nav.js?v=1.1.0"></script>
+    <script src="../assets/mini-highlight.js?v=1.1.0"></script>
+    <script src="../assets/site.js?v=1.1.0"></script>
+  </body>
+</html>

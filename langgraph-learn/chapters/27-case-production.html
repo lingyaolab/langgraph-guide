@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="完整案例：把 LangGraph 图接到 Postgres checkpointer / store、FastAPI SSE 与多租户配置，附上线验收清单。" />
+    <meta property="og:type" content="article" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:site_name" content="LangGraph 1.2.20 学习站" />
+    <meta property="og:title" content="27 案例五：生产部署 · LangGraph 1.2.20 学习站" />
+    <meta property="og:description" content="完整案例：把 LangGraph 图接到 Postgres checkpointer / store、FastAPI SSE 与多租户配置，附上线验收清单。" />
+    <title>27 案例五：生产部署 · LangGraph 1.2.20 学习站</title>
+    <script>
+      try {
+        var t = localStorage.getItem("as-learn-theme");
+        if (!t) t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    </script>
+    <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg?v=1.2.0" />
+    <link rel="stylesheet" href="../assets/base.css?v=1.1.0" />
+    <link rel="stylesheet" href="../assets/diagrams.css?v=1.1.0" />
+  </head>
+  <body data-page="27-case-production" data-root="..">
+    <main>
+      <article class="article">
+
+        <h1>27 · 案例五：生产部署</h1>
+        <p class="lede">
+          本地能跑不代表能上线。这个案例把前面的图接到 Postgres、SSE、多租户与健康检查上，
+          给出一个最小但完整的生产骨架。
+        </p>
+
+        <h2 id="goals">读完你能做到</h2>
+        <ul class="goals">
+          <li>用 <code>langgraph.json</code> 暴露图，并区分 dev / up</li>
+          <li>把 checkpointer 与 store 换成 Postgres</li>
+          <li>用 FastAPI + SSE 包装图，处理取消与断线</li>
+          <li>按 thread / tenant 隔离，并给上线验收清单</li>
+        </ul>
+
+        <h2 id="why">先说为什么：图和进程要分开</h2>
+        <p>
+          图是逻辑，进程是运行环境。生产化的核心是让 checkpoint、store、并发与部署形态解耦，
+          而不是把 <code>invoke</code> 包一层 HTTP 就完事。
+        </p>
+
+        <h2 id="brief">案例：一条生产请求</h2>
+        <pre data-lang="text" data-file="链路">HTTP /chat
+  → 鉴权，得到 tenant / user / thread
+  → 同一 thread 串行
+  → graph.astream(..., stream_mode="messages")
+  → SSE token / citations / done
+  → checkpoint 落 Postgres</pre>
+
+        <h2 id="config">配置与启动</h2>
+        <pre data-lang="json" data-file="langgraph.json">{
+  "dependencies": ["."],
+  "graphs": {"agent": "./agent.py:graph"},
+  "env": ".env"
+}</pre>
+        <pre data-lang="bash" data-file="本地 / 生产">langgraph dev
+langgraph up -c langgraph.json</pre>
+
+        <h2 id="storage">Postgres：checkpoint 与 store</h2>
+        <pre data-lang="python" data-file="postgres.py">from langgraph.checkpoint.postgres import PostgresSaver
+from langgraph.store.postgres import PostgresStore
+
+DB_URI = "postgresql://user:pass@db:5432/langgraph?sslmode=disable"
+
+with PostgresSaver.from_conn_string(DB_URI) as saver:
+    saver.setup()
+    graph = builder.compile(checkpointer=saver, store=store)</pre>
+        <p>
+          <code>PostgresSaver</code>
+          <span class="src" data-src="libs/checkpoint-postgres/langgraph/checkpoint/postgres/__init__.py:45">postgres/__init__.py:45</span>
+          与 <code>PostgresStore</code> 都需要先建表；多副本共用同一个数据库。
+        </p>
+
+        <h2 id="sse">FastAPI + SSE</h2>
+        <pre data-lang="python" data-file="app.py">from fastapi import FastAPI
+from fastapi.responses import StreamingResponse
+
+app = FastAPI()
+
+
+@app.post("/chat")
+async def chat(body: ChatBody):
+    config = {
+        "configurable": {
+            "thread_id": f'{body.tenant}:{body.user}:{body.thread}',
+            "user_id": body.user,
+        }
+    }
+
+    async def events():
+        async for message, meta in graph.astream(
+            {"messages": [("user", body.question)]},
+            config,
+            stream_mode="messages",
+        ):
+            text = message.content
+            if text:
+                yield f"data: {json.dumps({'type': 'token', 'text': text})}\n\n"
+        yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+    return StreamingResponse(events(), media_type="text/event-stream")</pre>
+
+        <h2 id="tenant">多租户与串行</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>问题</th><th>做法</th></tr></thead>
+            <tbody>
+              <tr><td>会话隔离</td><td>thread_id 带 tenant + user</td></tr>
+              <tr><td>偏好隔离</td><td>Store namespace 从 tenant 开始</td></tr>
+              <tr><td>同 thread 并发</td><td>锁 / 队列 / 409</td></tr>
+              <tr><td>SSE 断线</td><td>同 thread 重新订阅，不重新提交</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="checklist">上线验收</h2>
+        <ol>
+          <li>readiness 检查 Postgres 与 checkpoint 表。</li>
+          <li>同一 thread 重复提交只执行一次。</li>
+          <li>SSE 有心跳，反代关闭缓冲。</li>
+          <li>日志与 trace 脱敏，不出现密钥。</li>
+          <li>回滚方案：上一版镜像 + 数据库迁移脚本。</li>
+        </ol>
+
+        <h2 id="pitfalls">陷阱与窍门</h2>
+        <div class="callout warn">
+          <span class="ct">多副本用 InMemorySaver</span>
+          <p><strong>你会看到</strong>请求落到不同副本时历史丢失。<strong>因为</strong>checkpoint 只在单进程。<strong>改成</strong>Postgres。</p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">SSE 被 Nginx 缓冲</span>
+          <p><strong>你会看到</strong>前端一次性收到全部内容。<strong>因为</strong>代理开了 buffering。<strong>改成</strong>关闭缓冲 + 心跳。</p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">重复提交同一 thread</span>
+          <p><strong>你会看到</strong>状态互相覆盖。<strong>因为</strong>没有串行。<strong>改成</strong>锁 / 队列 / 409。</p>
+        </div>
+
+        <h2 id="quiz">自检三问</h2>
+        <ol>
+          <li>生产环境为什么不能用 <code>InMemorySaver</code>？</li>
+          <li>SSE 断线后应该重新提交还是重新订阅？</li>
+          <li>上线验收至少要看哪三类状态？</li>
+        </ol>
+
+        <h2 id="exercise">60 分钟动手练习</h2>
+        <ol>
+          <li>用 Postgres 跑两个副本，确认同一 thread 不分裂。</li>
+          <li>给 FastAPI 加 readiness，检查 checkpoint 表。</li>
+          <li>用 curl 观察 SSE 心跳与断线重连。</li>
+        </ol>
+
+        <h2 id="next">下一步</h2>
+        <p>
+          回到 <a href="00-study-map.html">00 学习地图</a>，
+          或从 <a href="17-capstone.html">17 综合案例</a> 把五条案例合成一个服务。
+        </p>
+
+      </article>
+    </main>
+    <script src="../assets/nav.js?v=1.1.0"></script>
+    <script src="../assets/mini-highlight.js?v=1.1.0"></script>
+    <script src="../assets/site.js?v=1.1.0"></script>
+  </body>
+</html>

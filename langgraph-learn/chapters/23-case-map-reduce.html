@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="完整案例：用 Send 把 N 篇文档分给并行摘要节点，用 reducer 合并，再生成一份报告；含失败隔离与成本控制。" />
+    <meta property="og:type" content="article" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:site_name" content="LangGraph 1.2.20 学习站" />
+    <meta property="og:title" content="23 案例一：文档摘要 map-reduce · LangGraph 1.2.20 学习站" />
+    <meta property="og:description" content="完整案例：用 Send 把 N 篇文档分给并行摘要节点，用 reducer 合并，再生成一份报告；含失败隔离与成本控制。" />
+    <title>23 案例一：文档摘要 map-reduce · LangGraph 1.2.20 学习站</title>
+    <script>
+      try {
+        var t = localStorage.getItem("as-learn-theme");
+        if (!t) t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    </script>
+    <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg?v=1.2.0" />
+    <link rel="stylesheet" href="../assets/base.css?v=1.1.0" />
+    <link rel="stylesheet" href="../assets/diagrams.css?v=1.1.0" />
+  </head>
+  <body data-page="23-case-map-reduce" data-root="..">
+    <main>
+      <article class="article">
+
+        <h1>23 · 案例一：文档摘要 map-reduce</h1>
+        <p class="lede">
+          需求：把一批文档并行摘要，最后合并成一份报告。这是 <code>Send</code> 最典型的场景：
+          运行时才知道有几篇文档，不能提前画死边。这个案例把输入、并行、合并、失败隔离与测试串起来。
+        </p>
+
+        <h2 id="goals">读完你能做到</h2>
+        <ul class="goals">
+          <li>用 <code>Send</code> 为每篇文档启动一个并行摘要实例</li>
+          <li>用 reducer 合并摘要，并保证顺序稳定</li>
+          <li>让单篇失败不影响整批，最后能看出哪篇失败</li>
+          <li>用假模型测试并行图，不访问网络</li>
+        </ul>
+
+        <h2 id="why">先说为什么：不要用 for 循环串行摘要</h2>
+        <p>
+          串行摘要的延迟是「文档数 × 单篇耗时」，并行的延迟接近「最慢的一篇」。
+          LangGraph 的 <code>Send</code>
+          <span class="src" data-src="libs/langgraph/langgraph/types.py:748">types.py:748</span>
+          让每个实例只拿到自己那篇文档，互不共享临时变量，天然适合 fan-out。
+        </p>
+
+        <h2 id="brief">案例：输入与输出</h2>
+        <pre data-lang="python" data-file="输入 / 输出">输入：[{"id": "a", "text": "..."}, {"id": "b", "text": "..."}]
+输出：{
+  "summaries": ["a: ...", "b: ..."],
+  "errors": [],
+  "report": "a: ...\nb: ..."
+}</pre>
+
+        <h2 id="architecture">架构：三张节点，一条 fan-out</h2>
+        <pre data-lang="text" data-file="图结构">START
+  → fan_out（按 docs 生成 Send）
+  → summarize × N（并行）
+  → merge（排序、拼报告）
+  → END</pre>
+
+        <h2 id="graph">装配：State 与 fan-out</h2>
+        <pre data-lang="python" data-file="graph.py">from operator import add
+from typing import Annotated, TypedDict
+
+from langgraph.graph import END, START, StateGraph
+from langgraph.types import Send
+
+
+class State(TypedDict):
+    docs: list[dict]
+    summaries: Annotated[list[str], add]
+    errors: Annotated[list[str], add]
+    report: str
+
+
+def fan_out(state: State):
+    return [Send("summarize", {"doc": d}) for d in state["docs"]]
+
+
+def summarize(payload: dict) -&gt; dict:
+    doc = payload["doc"]
+    try:
+        text = doc["text"]
+        # 真实场景：调用模型；这里用截断模拟
+        return {"summaries": [f'{doc["id"]}: {text[:40]}']}
+    except Exception as exc:
+        return {"errors": [f'{doc["id"]}: {exc}']}
+
+
+def merge(state: State) -&gt; dict:
+    return {"report": "\n".join(sorted(state["summaries"]))}
+
+
+builder = StateGraph(State)
+builder.add_node("summarize", summarize)
+builder.add_node("merge", merge)
+builder.add_conditional_edges(START, fan_out, ["summarize"])
+builder.add_edge("summarize", "merge")
+builder.add_edge("merge", END)
+
+graph = builder.compile()</pre>
+        <p>
+          注意 <code>merge</code> 只写 <code>report</code>，不要再写 <code>summaries</code>；
+          否则 reducer 会把已有摘要再加一遍。
+        </p>
+
+        <h2 id="failure">失败隔离：一篇失败不拖垮整批</h2>
+        <p>
+          <code>summarize</code> 内部捕获异常，把错误写进 <code>errors</code>。
+          这样其他文档照常完成，最后可以只重跑失败的那几篇。
+          如果让异常冒泡，整个 superstep 会失败。
+        </p>
+        <pre data-lang="python" data-file="只重跑失败项">def failed_docs(state: State):
+    failed = {e.split(":")[0] for e in state["errors"]}
+    return [d for d in state["docs"] if d["id"] in failed]</pre>
+
+        <h2 id="cost">成本控制</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>控制点</th><th>做法</th></tr></thead>
+            <tbody>
+              <tr><td>并发数</td><td>限制同时 Send 的数量，或分批提交</td></tr>
+              <tr><td>单篇长度</td><td>先切块，再摘要；不要整本塞进一次调用</td></tr>
+              <tr><td>输出长度</td><td>给摘要设最大 token</td></tr>
+              <tr><td>缓存</td><td>同一文档 + 同一模型可缓存</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="pitfalls">陷阱与窍门</h2>
+        <div class="callout warn">
+          <span class="ct">Send 的 payload 用全局 state</span>
+          <p><strong>你会看到</strong>每个实例都处理全部文档。<strong>因为</strong>payload 不是自动切片的。<strong>改成</strong>为每篇文档单独构造 payload。</p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">merge 又写 summaries</span>
+          <p><strong>你会看到</strong>摘要数量翻倍。<strong>因为</strong>reducer 又合并了一次。<strong>改成</strong>merge 只写 report。</p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">结果顺序乱</span>
+          <p><strong>你会看到</strong>报告顺序与输入不一致。<strong>因为</strong>并行完成顺序不保证。<strong>改成</strong>在摘要里带 id，最后排序。</p>
+        </div>
+
+        <h2 id="quiz">自检三问</h2>
+        <ol>
+          <li>为什么这个案例必须用 <code>Send</code>，而不是普通边？</li>
+          <li>单篇失败时，怎样让它不影响其他文档？</li>
+          <li>并行结果的顺序由什么决定？怎么保证稳定？</li>
+        </ol>
+
+        <h2 id="exercise">30 分钟动手练习</h2>
+        <ol>
+          <li>把 3 篇文档跑一遍，确认 summaries 有 3 条、report 顺序稳定。</li>
+          <li>让第二篇抛异常，确认 errors 有记录、其他两篇仍完成。</li>
+          <li>把并发限制为 2，观察总耗时与内存变化。</li>
+        </ol>
+
+        <h2 id="next">下一步</h2>
+        <p>
+          下一章 <a href="24-case-kb-service.html">24 案例二：多轮知识库客服</a>：
+          从并行批处理转到在线多轮，加入 checkpoint 与 Store。
+        </p>
+
+      </article>
+    </main>
+    <script src="../assets/nav.js?v=1.1.0"></script>
+    <script src="../assets/mini-highlight.js?v=1.1.0"></script>
+    <script src="../assets/site.js?v=1.1.0"></script>
+  </body>
+</html>
