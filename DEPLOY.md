@@ -16,8 +16,8 @@ python -m http.server 8080
 
 仓库已包含 `.github/workflows/deploy-pages.yml`：
 
-1. 推送到 `main`。
-2. 在仓库 Settings → Pages → Source 选择 **GitHub Actions**。
+1. 在仓库 Settings → Pages → Source 选择 **GitHub Actions**。
+2. 在 Actions 里手动运行 **Deploy site**（当前工作流只在手动触发）。
 3. 工作流会重建搜索索引、跑 `check-site`，然后发布 `langgraph-learn/`。
 
 ## Vercel / Netlify
