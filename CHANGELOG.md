@@ -2,6 +2,16 @@
 
 本站内容对应 **LangGraph 1.2.20**。日期为发布日，站点版本与框架版本分开记。
 
+## v1.3.0 — 2026-11-07
+
+新增可运行的 Python 配套示例。
+
+- `samples/` 按章节编号提供 01–13 的核心示例，以及与 24 章对应的 FastAPI SSE 小服务。
+- 默认使用 fake model，不访问网络；设置 `DEEPSEEK_API_KEY` 后走真实 DeepSeek。
+- `pytest` 覆盖最小图、reducer、路由、Send、checkpoint、时间旅行、HITL、ToolNode、Store。
+- 真实模型冒烟脚本 `s00_live_smoke.py` 已在 DeepSeek 上跑通。
+- `.env` 与 `.venv` 均已忽略，不提交密钥。
+
 ## v1.2.0 — 2026-11-07
 
 补齐五个完整案例，并修正 favicon 缓存。

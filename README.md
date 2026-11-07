@@ -5,6 +5,7 @@
 **内容状态**：第 00–27 章 + 00A 图执行实验室 + 附录 A–E，共 34 个内容页，对应站点版本 v1.2.0。
 
 - **本地看站**：双击 [`langgraph-learn/index.html`](langgraph-learn/index.html)，或在仓库根执行 `python -m http.server 8080` 后访问 <http://localhost:8080/langgraph-learn/>
+- **配套示例**：[`samples/`](samples/) 是按章节编号的可运行 Python 工程，默认用 fake model，设置 `DEEPSEEK_API_KEY` 后走真实模型
 - **部署**：见 [DEPLOY.md](DEPLOY.md)（GitHub Pages / Vercel / Netlify / 自建服务器）
 - **更新记录**：见 [CHANGELOG.md](CHANGELOG.md)
 - **自检**：`node tools/check-site.cjs` 与 `node tools/check-sources.cjs`
