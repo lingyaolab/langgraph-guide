@@ -18,8 +18,8 @@
       } catch (e) {}
     </script>
     <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
-    <link rel="stylesheet" href="../assets/base.css" />
-    <link rel="stylesheet" href="../assets/diagrams.css" />
+    <link rel="stylesheet" href="../assets/base.css?v=1.1.0" />
+    <link rel="stylesheet" href="../assets/diagrams.css?v=1.1.0" />
   </head>
   <body data-page="18-migration" data-root="..">
     <main>
@@ -90,6 +90,59 @@
           </table>
         </div>
 
+        
+        
+        <h2 id="practice">工程实践：三种写法与排查</h2>
+        <h3>选型三问</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>问题</th><th>如果答「是」</th></tr></thead>
+            <tbody>
+              <tr><td>需要中途暂停 / 人工确认？</td><td>选带 checkpoint + interrupt 的运行时</td></tr>
+              <tr><td>需要跨进程恢复？</td><td>排除纯内存</td></tr>
+              <tr><td>状态复杂到需要 reducer？</td><td>用图比手写 dict 更可控</td></tr>
+              <tr><td>只是简单工具循环？</td><td>LangChain agent 或函数可能更简单</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <h3>迁移检查</h3>
+        <pre data-lang="text" data-file="0.x → 1.x">1. 包版本与导入路径
+2. checkpointer / store 接口
+3. stream_mode 与事件形状
+4. prebuilt 的维护状态
+5. 用最小图跑回归</pre>
+        <p>
+          不要按类名一一替换：0.x 到 1.x 变的是运行时语义，不只是 API 名字。
+        </p>
+
+        <h2 id="deep">再深入一点：实现细节与边界</h2>
+        <h3>四种方案的边界</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>方案</th><th>状态 / 恢复</th><th>适合</th></tr></thead>
+            <tbody>
+              <tr><td>普通函数</td><td>无</td><td>一次性线性流程</td></tr>
+              <tr><td>LangChain agent</td><td>弱</td><td>简单工具循环</td></tr>
+              <tr><td>LangGraph</td><td>强</td><td>需要暂停、恢复、时间旅行</td></tr>
+              <tr><td>AgentScope / Spring AI</td><td>框架自带服务层</td><td>已有对应生态</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>0.x 到 1.x 的迁移顺序</h3>
+        <ol>
+          <li>先升包版本，跑最小图，确认导入路径。</li>
+          <li>再核对 checkpointer / store 的包与接口。</li>
+          <li>然后核对流式事件形状与 <code>stream_mode</code>。</li>
+          <li>最后处理 prebuilt 定位与 Agent 层的替代方案。</li>
+        </ol>
+
+        <h3>不要为了图而图</h3>
+        <p>
+          如果流程没有暂停、恢复、审计或多人协作需求，一个函数或 LangChain chain 更便宜。
+          LangGraph 的价值在运行时语义，不在「看起来更架构」。
+        </p>
+
         <h2 id="pitfalls">陷阱与窍门</h2>
         <div class="callout warn">
           <span class="ct">照抄 0.x 教程</span>
@@ -126,8 +179,8 @@
 
       </article>
     </main>
-    <script src="../assets/nav.js"></script>
-    <script src="../assets/mini-highlight.js"></script>
-    <script src="../assets/site.js"></script>
+    <script src="../assets/nav.js?v=1.1.0"></script>
+    <script src="../assets/mini-highlight.js?v=1.1.0"></script>
+    <script src="../assets/site.js?v=1.1.0"></script>
   </body>
 </html>

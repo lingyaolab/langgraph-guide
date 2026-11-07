@@ -18,8 +18,8 @@
       } catch (e) {}
     </script>
     <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
-    <link rel="stylesheet" href="../assets/base.css" />
-    <link rel="stylesheet" href="../assets/diagrams.css" />
+    <link rel="stylesheet" href="../assets/base.css?v=1.1.0" />
+    <link rel="stylesheet" href="../assets/diagrams.css?v=1.1.0" />
   </head>
   <body data-page="07-hitl" data-root="..">
     <main>
@@ -130,6 +130,66 @@ graph.invoke(Command(resume=answer), config)</pre>
           </p>
         </div>
 
+        
+        
+        <h2 id="practice">工程实践：三种写法与排查</h2>
+        <h3>中断的三种 payload</h3>
+        <pre data-lang="python" data-file="布尔 / 表单 / 选择"># 布尔确认
+ok = interrupt({"type": "confirm", "title": "是否继续？"})
+
+# 表单
+form = interrupt({"type": "form", "fields": ["reason", "amount"]})
+
+# 选择
+choice = interrupt({"type": "select", "options": ["A", "B"]})</pre>
+        <h3>恢复</h3>
+        <pre data-lang="python" data-file="Command(resume=...)">graph.invoke(Command(resume={"approved": True, "reason": "测试"}), config)</pre>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>现象</th><th>原因</th><th>改法</th></tr></thead>
+            <tbody>
+              <tr><td>恢复后从头跑</td><td>换了 thread_id</td><td>同一个 config</td></tr>
+              <tr><td>重复发邮件</td><td>副作用在 interrupt 之前</td><td>移到之后 / 幂等</td></tr>
+              <tr><td>多个中断只恢复一个</td><td>没按中断 id 匹配</td><td>保存并逐个 resume</td></tr>
+              <tr><td>报缺少 checkpointer</td><td>编译时没挂</td><td><code>compile(checkpointer=...)</code></td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="deep">再深入一点：实现细节与边界</h2>
+        <h3>多个中断怎么恢复</h3>
+        <p>
+          一个 superstep 里可以有多个节点同时 interrupt。恢复时，
+          <code>Command(resume=...)</code> 会按中断 id 匹配；只恢复一个，其他仍挂起。
+          前端要保存中断 id 与对应的 payload。
+        </p>
+        <pre data-lang="python" data-file="带表单的中断">def approval(state: dict) -&gt; dict:
+    answer = interrupt({
+        "type": "approval",
+        "title": "创建退款工单",
+        "fields": ["approved", "reason"],
+    })
+    return {"approved": answer["approved"], "reason": answer["reason"]}</pre>
+
+        <h3>副作用放在 interrupt 之后</h3>
+        <p>
+          节点会重新进入，interrupt 之前的代码会再跑一遍。
+          发邮件、扣款、写库要放在 interrupt 之后，或用幂等键。
+        </p>
+
+        <h3>前端契约</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>字段</th><th>用途</th></tr></thead>
+            <tbody>
+              <tr><td><code>thread_id</code></td><td>恢复时必须原样带回</td></tr>
+              <tr><td>中断 id</td><td>多个中断时定位到具体一个</td></tr>
+              <tr><td>payload</td><td>渲染确认框 / 表单</td></tr>
+              <tr><td>resume schema</td><td>前端知道提交什么结构</td></tr>
+            </tbody>
+          </table>
+        </div>
+
         <h2 id="pitfalls">陷阱与窍门</h2>
         <div class="callout warn">
           <span class="ct">在 interrupt 前做了副作用</span>
@@ -166,8 +226,8 @@ graph.invoke(Command(resume=answer), config)</pre>
 
       </article>
     </main>
-    <script src="../assets/nav.js"></script>
-    <script src="../assets/mini-highlight.js"></script>
-    <script src="../assets/site.js"></script>
+    <script src="../assets/nav.js?v=1.1.0"></script>
+    <script src="../assets/mini-highlight.js?v=1.1.0"></script>
+    <script src="../assets/site.js?v=1.1.0"></script>
   </body>
 </html>

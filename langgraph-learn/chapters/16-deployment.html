@@ -18,8 +18,8 @@
       } catch (e) {}
     </script>
     <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
-    <link rel="stylesheet" href="../assets/base.css" />
-    <link rel="stylesheet" href="../assets/diagrams.css" />
+    <link rel="stylesheet" href="../assets/base.css?v=1.1.0" />
+    <link rel="stylesheet" href="../assets/diagrams.css?v=1.1.0" />
   </head>
   <body data-page="16-deployment" data-root="..">
     <main>
@@ -106,6 +106,61 @@ with PostgresStore.from_conn_string(DB_URI) as store:
           <li>健康检查要区分 liveness（进程活着）与 readiness（依赖可用）。</li>
         </ul>
 
+        
+        
+        <h2 id="practice">工程实践：三种写法与排查</h2>
+        <h3>配置与启动</h3>
+        <pre data-lang="json" data-file="langgraph.json">{
+  "dependencies": ["."],
+  "graphs": {"agent": "./agent.py:graph"},
+  "env": ".env"
+}</pre>
+        <pre data-lang="bash" data-file="本地与生产">langgraph dev
+langgraph up -c langgraph.json</pre>
+        <h3>Postgres 初始化</h3>
+        <pre data-lang="python" data-file="setup">with PostgresSaver.from_conn_string(DB_URI) as saver:
+    saver.setup()</pre>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>现象</th><th>原因</th><th>改法</th></tr></thead>
+            <tbody>
+              <tr><td>多副本历史丢失</td><td>InMemorySaver</td><td>共享 Postgres</td></tr>
+              <tr><td>重复执行同一 thread</td><td>没有串行</td><td>锁 / 队列 / 409</td></tr>
+              <tr><td>SSE 被代理缓冲</td><td>Nginx buffering</td><td>关闭缓冲 + 心跳</td></tr>
+              <tr><td>启动即失败</td><td>表没建 / 连接串错</td><td>先 setup + readiness</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="deep">再深入一点：实现细节与边界</h2>
+        <h3>langgraph.json 的常用字段</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>字段</th><th>作用</th></tr></thead>
+            <tbody>
+              <tr><td><code>dependencies</code></td><td>安装依赖；<code>"."</code> 表示当前项目</td></tr>
+              <tr><td><code>graphs</code></td><td>暴露的图：<code>文件:变量</code></td></tr>
+              <tr><td><code>env</code></td><td>环境变量文件</td></tr>
+              <tr><td><code>python_version</code></td><td>运行时 Python 版本</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>Postgres 初始化</h3>
+        <pre data-lang="python" data-file="建表">from langgraph.checkpoint.postgres import PostgresSaver
+
+with PostgresSaver.from_conn_string(DB_URI) as saver:
+    saver.setup()</pre>
+
+        <h3>上线前检查</h3>
+        <ul>
+          <li>同一 thread 的并发是否串行？重复提交返回什么？</li>
+          <li>checkpoint / store 是否是共享后端？</li>
+          <li>readiness 是否检查数据库与表？</li>
+          <li>SSE 超时、反向代理缓冲、心跳是否配置？</li>
+          <li>长任务是否走后台队列，而不是阻塞 HTTP？</li>
+        </ul>
+
         <h2 id="pitfalls">陷阱与窍门</h2>
         <div class="callout warn">
           <span class="ct">多副本用 InMemorySaver</span>
@@ -142,8 +197,8 @@ with PostgresStore.from_conn_string(DB_URI) as store:
 
       </article>
     </main>
-    <script src="../assets/nav.js"></script>
-    <script src="../assets/mini-highlight.js"></script>
-    <script src="../assets/site.js"></script>
+    <script src="../assets/nav.js?v=1.1.0"></script>
+    <script src="../assets/mini-highlight.js?v=1.1.0"></script>
+    <script src="../assets/site.js?v=1.1.0"></script>
   </body>
 </html>

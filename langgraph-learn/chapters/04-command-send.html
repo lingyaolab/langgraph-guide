@@ -18,8 +18,8 @@
       } catch (e) {}
     </script>
     <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
-    <link rel="stylesheet" href="../assets/base.css" />
-    <link rel="stylesheet" href="../assets/diagrams.css" />
+    <link rel="stylesheet" href="../assets/base.css?v=1.1.0" />
+    <link rel="stylesheet" href="../assets/diagrams.css?v=1.1.0" />
   </head>
   <body data-page="04-command-send" data-root="..">
     <main>
@@ -155,6 +155,69 @@ print(graph.invoke({"docs": ["a" * 30, "b" * 30], "summaries": []}))</pre>
           </p>
         </div>
 
+        
+        
+        <h2 id="practice">工程实践：三种写法与排查</h2>
+        <h3>Command 与条件边怎么选</h3>
+        <pre data-lang="python" data-file="Command">def triage(state: State) -&gt; Command:
+    return Command(update={"route": "billing"}, goto="billing")</pre>
+        <pre data-lang="python" data-file="条件边">def route(state: State) -&gt; str:
+    return state["route"]
+
+builder.add_conditional_edges("triage", route, ["billing", "general"])</pre>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>需求</th><th>选择</th></tr></thead>
+            <tbody>
+              <tr><td>同时改 state 与跳转</td><td><code>Command</code></td></tr>
+              <tr><td>只根据 state 选边</td><td>条件边</td></tr>
+              <tr><td>运行时才知道几路</td><td><code>Send</code></td></tr>
+              <tr><td>固定两路并行</td><td>普通边 + 两个节点</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <h3>Send 的排查</h3>
+        <ul>
+          <li>payload 不是全局 state；缺少字段就在 fan-out 时补。</li>
+          <li>汇总字段必须有 reducer，否则并行写会冲突。</li>
+          <li>结果顺序不保证；需要稳定顺序就带 index 后排序。</li>
+        </ul>
+
+        <h2 id="deep">再深入一点：实现细节与边界</h2>
+        <h3>Send 的 payload 设计</h3>
+        <p>
+          Send 的 payload 会成为该实例的初始输入。把「这一路需要的全部信息」显式放进去，
+          不要让子任务再去读全局 state；这既是隔离，也是可测试性。
+        </p>
+        <pre data-lang="python" data-file="带序号的 fan-out">def fan_out(state: State):
+    return [
+        Send("summarize", {"doc": doc, "index": i})
+        for i, doc in enumerate(state["docs"])
+    ]
+
+
+def summarize(payload: dict) -&gt; dict:
+    return {"summaries": [f'{payload["index"]}:{payload["doc"][:20]}']}</pre>
+
+        <h3>并行节点与 reducer</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>写法</th><th>结果</th></tr></thead>
+            <tbody>
+              <tr><td>两个节点写同一字段，无 reducer</td><td><code>InvalidUpdateError</code></td></tr>
+              <tr><td>两个节点写同一字段，有 <code>add</code></td><td>按 reducer 合并</td></tr>
+              <tr><td>两个节点写不同字段</td><td>都能保留</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>Command 与条件的取舍</h3>
+        <p>
+          需要「同一步既改 state 又跳转」用 <code>Command</code>；
+          只需要「根据 state 选边」用条件边。不要在 Command 里做重 IO，
+          它仍然是一个节点，失败会按节点重试 / 异常处理。
+        </p>
+
         <h2 id="pitfalls">陷阱与窍门</h2>
         <div class="callout warn">
           <span class="ct">Command 里 goto 到不存在的节点</span>
@@ -191,8 +254,8 @@ print(graph.invoke({"docs": ["a" * 30, "b" * 30], "summaries": []}))</pre>
 
       </article>
     </main>
-    <script src="../assets/nav.js"></script>
-    <script src="../assets/mini-highlight.js"></script>
-    <script src="../assets/site.js"></script>
+    <script src="../assets/nav.js?v=1.1.0"></script>
+    <script src="../assets/mini-highlight.js?v=1.1.0"></script>
+    <script src="../assets/site.js?v=1.1.0"></script>
   </body>
 </html>

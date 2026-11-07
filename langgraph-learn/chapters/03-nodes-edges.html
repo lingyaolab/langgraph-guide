@@ -18,8 +18,8 @@
       } catch (e) {}
     </script>
     <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
-    <link rel="stylesheet" href="../assets/base.css" />
-    <link rel="stylesheet" href="../assets/diagrams.css" />
+    <link rel="stylesheet" href="../assets/base.css?v=1.1.0" />
+    <link rel="stylesheet" href="../assets/diagrams.css?v=1.1.0" />
   </head>
   <body data-page="03-nodes-edges" data-root="..">
     <main>
@@ -153,6 +153,70 @@ def should_continue(state: LoopState) -> str:
           </p>
         </div>
 
+        
+        
+        <h2 id="practice">工程实践：三种写法与排查</h2>
+        <h3>同步节点与异步节点</h3>
+        <pre data-lang="python" data-file="两种节点">def sync_node(state: State) -&gt; dict:
+    return {"count": state["count"] + 1}
+
+async def async_node(state: State) -&gt; dict:
+    data = await fetch(state["url"])
+    return {"data": data}</pre>
+        <h3>条件边 + 路径映射</h3>
+        <pre data-lang="python" data-file="显式路径">builder.add_conditional_edges(
+    "classify",
+    lambda s: s["route"],
+    {"refund": "refund", "shipping": "shipping", "other": END},
+)</pre>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>现象</th><th>原因</th><th>改法</th></tr></thead>
+            <tbody>
+              <tr><td>路由值不在映射里</td><td>返回了拼错 / 未声明的 key</td><td>补映射或抛明确错误</td></tr>
+              <tr><td>循环停不下来</td><td>路由读的字段没有更新</td><td>节点里更新计数 / 状态</td></tr>
+              <tr><td>异步节点没执行</td><td>把协程当普通函数返回</td><td>用 <code>async def</code> 并 <code>await</code></td></tr>
+              <tr><td>边看起来连了但不走</td><td>条件边返回了另一个节点名</td><td>打印路由输入与返回值</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="deep">再深入一点：实现细节与边界</h2>
+        <h3>异步节点与异常</h3>
+        <p>
+          节点可以是 <code>async def</code>。异常默认会冒泡并终止本轮执行；
+          如果希望模型看到错误并换方案，就在节点内捕获，把错误写进 state 或消息。
+        </p>
+        <pre data-lang="python" data-file="异步节点">async def fetch(state: dict) -&gt; dict:
+    try:
+        data = await client.get(state["url"])
+        return {"data": data}
+    except TimeoutError:
+        return {"error": "timeout", "data": None}</pre>
+
+        <h3>一个节点，多条条件边</h3>
+        <p>
+          同一个源节点可以挂多条条件边，但更推荐一条条件边 + 完整路径映射，
+          这样所有分支在一处可见。
+        </p>
+        <pre data-lang="python" data-file="完整路径映射">builder.add_conditional_edges(
+    "classify",
+    pick,
+    {
+        "billing": "billing",
+        "shipping": "shipping",
+        "other": "general",
+        "stop": END,
+    },
+)</pre>
+
+        <h3>调试路由</h3>
+        <ul>
+          <li>先打印路由函数的输入与返回值，确认它看到的是你以为的 state。</li>
+          <li>再确认返回值在路径映射里；没有映射时返回值必须等于节点名。</li>
+          <li>最后看 <code>graph.get_graph().draw_mermaid()</code> 的边是否与预期一致。</li>
+        </ul>
+
         <h2 id="pitfalls">陷阱与窍门</h2>
         <div class="callout warn">
           <span class="ct">路由函数返回了节点名之外的值</span>
@@ -189,8 +253,8 @@ def should_continue(state: LoopState) -> str:
 
       </article>
     </main>
-    <script src="../assets/nav.js"></script>
-    <script src="../assets/mini-highlight.js"></script>
-    <script src="../assets/site.js"></script>
+    <script src="../assets/nav.js?v=1.1.0"></script>
+    <script src="../assets/mini-highlight.js?v=1.1.0"></script>
+    <script src="../assets/site.js?v=1.1.0"></script>
   </body>
 </html>

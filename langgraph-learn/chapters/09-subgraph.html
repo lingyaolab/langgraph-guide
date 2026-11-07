@@ -18,8 +18,8 @@
       } catch (e) {}
     </script>
     <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
-    <link rel="stylesheet" href="../assets/base.css" />
-    <link rel="stylesheet" href="../assets/diagrams.css" />
+    <link rel="stylesheet" href="../assets/base.css?v=1.1.0" />
+    <link rel="stylesheet" href="../assets/diagrams.css?v=1.1.0" />
   </head>
   <body data-page="09-subgraph" data-root="..">
     <main>
@@ -113,6 +113,66 @@ print(parent.compile().invoke({"text": "  hello  "}))</pre>
           </p>
         </div>
 
+        
+        
+        <h2 id="practice">工程实践：三种写法与排查</h2>
+        <h3>子图的两种接入</h3>
+        <pre data-lang="python" data-file="直接当节点">parent.add_node("child", child_graph)</pre>
+        <pre data-lang="python" data-file="显式映射">def call_child(state: ParentState) -&gt; dict:
+    out = child_graph.invoke({"query": state["question"]})
+    return {"answer": out["result"]}
+
+parent.add_node("child", call_child)</pre>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>现象</th><th>原因</th><th>改法</th></tr></thead>
+            <tbody>
+              <tr><td>子图缺字段</td><td>schema 不兼容</td><td>显式映射</td></tr>
+              <tr><td>恢复点混乱</td><td>父子都挂 checkpointer</td><td>通常只父图挂</td></tr>
+              <tr><td>看不到子图内部</td><td>没看命名空间</td><td>事件里找 <code>checkpoint_ns</code></td></tr>
+              <tr><td>子图状态污染父图</td><td>硬共享同一 schema</td><td>独立 schema + 转换</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="deep">再深入一点：实现细节与边界</h2>
+        <h3>父子 schema 映射</h3>
+        <p>
+          子图 schema 与父图不同时，写一个映射函数，不要硬塞整个父 state。
+          这样父图的字段变化不会意外影响子图。
+        </p>
+        <pre data-lang="python" data-file="显式映射">class ParentState(TypedDict):
+    question: str
+    answer: str
+
+
+class ChildState(TypedDict):
+    query: str
+    result: str
+
+
+def call_child(state: ParentState) -&gt; dict:
+    out = child.invoke({"query": state["question"], "result": ""})
+    return {"answer": out["result"]}</pre>
+
+        <h3>子图要不要自己的 checkpointer</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>做法</th><th>适合</th><th>风险</th></tr></thead>
+            <tbody>
+              <tr><td>只父图挂</td><td>大多数场景</td><td>子图不能独立恢复</td></tr>
+              <tr><td>父子都挂</td><td>子图需要独立时间旅行</td><td>恢复点容易混</td></tr>
+              <tr><td>子图纯节点</td><td>可复用、无状态</td><td>内部不能暂停</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>命名空间</h3>
+        <p>
+          子图事件带命名空间，形如 <code>parent:child</code>。
+          流式事件、错误栈与 checkpoint 都会带它；先看命名空间，再看节点名。
+        </p>
+
         <h2 id="pitfalls">陷阱与窍门</h2>
         <div class="callout warn">
           <span class="ct">子图 schema 与父图不兼容</span>
@@ -149,8 +209,8 @@ print(parent.compile().invoke({"text": "  hello  "}))</pre>
 
       </article>
     </main>
-    <script src="../assets/nav.js"></script>
-    <script src="../assets/mini-highlight.js"></script>
-    <script src="../assets/site.js"></script>
+    <script src="../assets/nav.js?v=1.1.0"></script>
+    <script src="../assets/mini-highlight.js?v=1.1.0"></script>
+    <script src="../assets/site.js?v=1.1.0"></script>
   </body>
 </html>

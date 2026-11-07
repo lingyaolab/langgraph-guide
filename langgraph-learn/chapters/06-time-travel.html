@@ -18,8 +18,8 @@
       } catch (e) {}
     </script>
     <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
-    <link rel="stylesheet" href="../assets/base.css" />
-    <link rel="stylesheet" href="../assets/diagrams.css" />
+    <link rel="stylesheet" href="../assets/base.css?v=1.1.0" />
+    <link rel="stylesheet" href="../assets/diagrams.css?v=1.1.0" />
   </head>
   <body data-page="06-time-travel" data-root="..">
     <main>
@@ -101,6 +101,68 @@ graph.invoke(None, fork_config)   # 从分叉点继续</pre>
           这适合 A/B 对比与「回滚到某一步再试」，但要注意外部副作用（发邮件、写数据库）不会自动回滚。
         </p>
 
+        
+        
+        <h2 id="practice">工程实践：三种写法与排查</h2>
+        <h3>历史、回放与分叉</h3>
+        <pre data-lang="python" data-file="三种操作"># 读历史
+history = list(graph.get_state_history(config))
+
+# 改状态
+graph.update_state(config, {"note": "人工修正"}, as_node="agent")
+
+# 从旧点分叉
+fork = graph.update_state(history[-2].config, {"note": "换方案"}, as_node="agent")
+graph.invoke(None, fork)</pre>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>操作</th><th>会不会重跑节点</th><th>会不会回滚外部副作用</th></tr></thead>
+            <tbody>
+              <tr><td><code>get_state</code></td><td>不会</td><td>不会</td></tr>
+              <tr><td><code>update_state</code></td><td>不会，下一次 invoke 才继续</td><td>不会</td></tr>
+              <tr><td>从旧 checkpoint 分叉</td><td>会重跑分叉后的节点</td><td>不会</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <h3>排查顺序</h3>
+        <ol>
+          <li>先看历史里「第一次出现坏值」的快照。</li>
+          <li>再看它的 <code>next</code>，确认当时准备执行哪个节点。</li>
+          <li>最后从它的前一步回放，复现问题。</li>
+        </ol>
+
+        <h2 id="deep">再深入一点：实现细节与边界</h2>
+        <h3>回放与分叉的区别</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>操作</th><th>结果</th><th>适合</th></tr></thead>
+            <tbody>
+              <tr><td>从旧 checkpoint 继续</td><td>产生新的分叉链</td><td>A/B 对比、回滚重试</td></tr>
+              <tr><td>update_state 后继续</td><td>人工修正后重跑</td><td>补数据、改判断</td></tr>
+              <tr><td>重新 invoke</td><td>从当前线程最新状态继续</td><td>正常多轮</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>分叉后的外部副作用</h3>
+        <p>
+          checkpoint 只保存图内状态。发邮件、写数据库、调用第三方 API 不会回滚。
+          要支持安全重放，外部操作必须有幂等键，或在分叉前记录已执行的操作 id。
+        </p>
+        <pre data-lang="python" data-file="分叉后继续">fork = graph.update_state(
+    old.config,
+    {"messages": [("user", "换一个方案")]},
+    as_node="agent",
+)
+graph.invoke(None, fork)</pre>
+
+        <h3>调试时间线的顺序</h3>
+        <ol>
+          <li><code>get_state_history</code> 从新到旧列出快照。</li>
+          <li>找到故障前最后一个 <code>next</code> 非空的快照。</li>
+          <li>从它的 <code>config</code> 回放，或在它上面 <code>update_state</code>。</li>
+        </ol>
+
         <h2 id="pitfalls">陷阱与窍门</h2>
         <div class="callout warn">
           <span class="ct">把时间旅行当成事务回滚</span>
@@ -137,8 +199,8 @@ graph.invoke(None, fork_config)   # 从分叉点继续</pre>
 
       </article>
     </main>
-    <script src="../assets/nav.js"></script>
-    <script src="../assets/mini-highlight.js"></script>
-    <script src="../assets/site.js"></script>
+    <script src="../assets/nav.js?v=1.1.0"></script>
+    <script src="../assets/mini-highlight.js?v=1.1.0"></script>
+    <script src="../assets/site.js?v=1.1.0"></script>
   </body>
 </html>

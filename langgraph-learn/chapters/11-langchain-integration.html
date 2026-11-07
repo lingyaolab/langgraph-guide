@@ -18,8 +18,8 @@
       } catch (e) {}
     </script>
     <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
-    <link rel="stylesheet" href="../assets/base.css" />
-    <link rel="stylesheet" href="../assets/diagrams.css" />
+    <link rel="stylesheet" href="../assets/base.css?v=1.1.0" />
+    <link rel="stylesheet" href="../assets/diagrams.css?v=1.1.0" />
   </head>
   <body data-page="11-langchain-integration" data-root="..">
     <main>
@@ -115,6 +115,57 @@ print(out["messages"][-1].content)</pre>
           </p>
         </div>
 
+        
+        
+        <h2 id="practice">工程实践：三种写法与排查</h2>
+        <h3>工具循环的完整骨架</h3>
+        <pre data-lang="python" data-file="agent + tools">builder = StateGraph(MessagesState)
+builder.add_node("agent", agent)
+builder.add_node("tools", ToolNode([get_weather]))
+builder.add_edge(START, "agent")
+builder.add_conditional_edges("agent", tools_condition)
+builder.add_edge("tools", "agent")</pre>
+        <h3>自定义错误策略</h3>
+        <pre data-lang="python" data-file="handle_tool_errors">tools = ToolNode([get_weather], handle_tool_errors=True)</pre>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>现象</th><th>原因</th><th>改法</th></tr></thead>
+            <tbody>
+              <tr><td>模型不调工具</td><td>没 bind_tools</td><td>绑定 schema</td></tr>
+              <tr><td>工具结果模型看不到</td><td>没写回 messages</td><td>用 ToolMessage</td></tr>
+              <tr><td>路由到不存在的 tools</td><td>节点名不是 <code>"tools"</code></td><td>改映射或节点名</td></tr>
+              <tr><td>异常终止整图</td><td>handle_tool_errors=False</td><td>捕获并返回文本</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="deep">再深入一点：实现细节与边界</h2>
+        <h3>工具错误处理</h3>
+        <pre data-lang="python" data-file="ToolNode 的错误策略">from langgraph.prebuilt import ToolNode
+
+tools = ToolNode([get_weather], handle_tool_errors=True)
+# 也可以传字符串、异常类型或自定义函数，决定错误如何回到模型</pre>
+        <p>
+          <code>handle_tool_errors</code>
+          <span class="src" data-src="libs/prebuilt/langgraph/prebuilt/tool_node.py:757">tool_node.py:757</span>
+          默认会把可预期的工具错误转成 <code>ToolMessage</code>；
+          设成 <code>False</code> 则让异常冒泡。
+        </p>
+
+        <h3>工具返回 Command</h3>
+        <p>
+          工具不一定要只返回文本。返回 <code>Command(update=..., goto=...)</code>
+          可以让工具直接改变图的走向，例如「查询完成后跳到汇总节点」。
+          这属于高级用法，先确认普通 ToolMessage 不够用。
+        </p>
+
+        <h3>消息键不是 messages 时</h3>
+        <pre data-lang="python" data-file="自定义消息键">ToolNode([get_weather], messages_key="chat_history")</pre>
+        <p>
+          state 里的消息字段叫别的名字时，ToolNode 与 <code>tools_condition</code>
+          都要同步指定 <code>messages_key</code>，否则它们读不到工具调用。
+        </p>
+
         <h2 id="pitfalls">陷阱与窍门</h2>
         <div class="callout warn">
           <span class="ct">忘记 bind_tools</span>
@@ -151,8 +202,8 @@ print(out["messages"][-1].content)</pre>
 
       </article>
     </main>
-    <script src="../assets/nav.js"></script>
-    <script src="../assets/mini-highlight.js"></script>
-    <script src="../assets/site.js"></script>
+    <script src="../assets/nav.js?v=1.1.0"></script>
+    <script src="../assets/mini-highlight.js?v=1.1.0"></script>
+    <script src="../assets/site.js?v=1.1.0"></script>
   </body>
 </html>

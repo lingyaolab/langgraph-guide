@@ -18,8 +18,8 @@
       } catch (e) {}
     </script>
     <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
-    <link rel="stylesheet" href="../assets/base.css" />
-    <link rel="stylesheet" href="../assets/diagrams.css" />
+    <link rel="stylesheet" href="../assets/base.css?v=1.1.0" />
+    <link rel="stylesheet" href="../assets/diagrams.css?v=1.1.0" />
   </head>
   <body data-page="05-checkpointer" data-root="..">
     <main>
@@ -117,6 +117,61 @@ checkpointer.setup()
 
 graph = builder.compile(checkpointer=checkpointer)</pre>
 
+        
+        
+        <h2 id="practice">工程实践：三种写法与排查</h2>
+        <h3>三种后端的最小配置</h3>
+        <pre data-lang="python" data-file="内存 / SQLite / Postgres"># 测试
+saver = InMemorySaver()
+
+# 本地
+conn = sqlite3.connect("cp.db", check_same_thread=False)
+saver = SqliteSaver(conn); saver.setup()
+
+# 生产
+with PostgresSaver.from_conn_string(DB_URI) as saver:
+    saver.setup()</pre>
+        <h3>读快照</h3>
+        <pre data-lang="python" data-file="get_state">snap = graph.get_state(config)
+print(snap.values, snap.next, snap.config)</pre>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>现象</th><th>原因</th><th>改法</th></tr></thead>
+            <tbody>
+              <tr><td>多轮不记得</td><td>没传 thread_id</td><td>所有调用带同一个 config</td></tr>
+              <tr><td>重启后丢失</td><td>用了 InMemorySaver</td><td>SQLite / Postgres</td></tr>
+              <tr><td>写入很慢</td><td>state 里有大对象</td><td>大对象外部存储</td></tr>
+              <tr><td>两个副本状态分裂</td><td>各自用本地存储</td><td>共享 Postgres</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="deep">再深入一点：实现细节与边界</h2>
+        <h3>SQLite 的线程参数</h3>
+        <p>
+          SQLite 连接默认不允许跨线程使用。LangGraph 的异步执行可能在不同线程里访问连接，
+          所以本地示例要传 <code>check_same_thread=False</code>，并自己保证串行写入。
+        </p>
+        <pre data-lang="python" data-file="SQLite 初始化">import sqlite3
+from langgraph.checkpoint.sqlite import SqliteSaver
+
+conn = sqlite3.connect("checkpoints.db", check_same_thread=False)
+saver = SqliteSaver(conn)
+saver.setup()</pre>
+
+        <h3>看当前停在哪</h3>
+        <pre data-lang="python" data-file="快照里的 next">snapshot = graph.get_state(config)
+print(snapshot.values)   # 当前 state
+print(snapshot.next)     # 下一步要执行的节点（空 tuple 表示结束）
+print(snapshot.config)   # 这个快照的 config，可用于回放</pre>
+
+        <h3>什么时候会写 checkpoint</h3>
+        <ul>
+          <li>每个 superstep 结束；不是每个节点结束都写，并行节点会合批。</li>
+          <li>输入节点、恢复、update_state、fork 也会写。</li>
+          <li>state 越大，写入越慢；不要把文件内容直接塞进 state。</li>
+        </ul>
+
         <h2 id="pitfalls">陷阱与窍门</h2>
         <div class="callout warn">
           <span class="ct">调用时忘了传 config</span>
@@ -153,8 +208,8 @@ graph = builder.compile(checkpointer=checkpointer)</pre>
 
       </article>
     </main>
-    <script src="../assets/nav.js"></script>
-    <script src="../assets/mini-highlight.js"></script>
-    <script src="../assets/site.js"></script>
+    <script src="../assets/nav.js?v=1.1.0"></script>
+    <script src="../assets/mini-highlight.js?v=1.1.0"></script>
+    <script src="../assets/site.js?v=1.1.0"></script>
   </body>
 </html>

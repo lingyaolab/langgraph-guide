@@ -18,8 +18,8 @@
       } catch (e) {}
     </script>
     <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
-    <link rel="stylesheet" href="../assets/base.css" />
-    <link rel="stylesheet" href="../assets/diagrams.css" />
+    <link rel="stylesheet" href="../assets/base.css?v=1.1.0" />
+    <link rel="stylesheet" href="../assets/diagrams.css?v=1.1.0" />
   </head>
   <body data-page="10-retry-cache" data-root="..">
     <main>
@@ -112,6 +112,68 @@ graph = builder.compile()</pre>
           <li>重试预算：重试次数 × 单次超时，不能超过用户能接受的总延迟。</li>
         </ul>
 
+        
+        
+        <h2 id="practice">工程实践：三种写法与排查</h2>
+        <h3>只重试可重试错误</h3>
+        <pre data-lang="python" data-file="retry_on">from langgraph.types import RetryPolicy
+
+builder.add_node(
+    "call_api",
+    call_api,
+    retry_policy=RetryPolicy(
+        max_attempts=3,
+        retry_on=(TimeoutError, ConnectionError),
+    ),
+)</pre>
+        <h3>缓存纯函数</h3>
+        <pre data-lang="python" data-file="CachePolicy">from langgraph.types import CachePolicy
+
+builder.add_node("normalize", normalize, cache_policy=CachePolicy(ttl=600))</pre>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>现象</th><th>原因</th><th>改法</th></tr></thead>
+            <tbody>
+              <tr><td>401 一直重试</td><td>retry_on 太宽</td><td>只保留网络 / 429 / 5xx</td></tr>
+              <tr><td>重复扣款</td><td>写操作被重试</td><td>幂等键</td></tr>
+              <tr><td>用户看到别人的结果</td><td>缓存键没带租户</td><td>加 tenant / user</td></tr>
+              <tr><td>循环跑满上限</td><td>没有业务停止条件</td><td>加计数 / 完成判定</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="deep">再深入一点：实现细节与边界</h2>
+        <h3>RetryPolicy 的完整字段</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>字段</th><th>默认值</th><th>作用</th></tr></thead>
+            <tbody>
+              <tr><td><code>initial_interval</code></td><td>0.5s</td><td>第一次重试前等待</td></tr>
+              <tr><td><code>backoff_factor</code></td><td>2.0</td><td>每次等待乘以它</td></tr>
+              <tr><td><code>max_interval</code></td><td>128s</td><td>单次等待上限</td></tr>
+              <tr><td><code>max_attempts</code></td><td>3</td><td>包含首次的尝试次数</td></tr>
+              <tr><td><code>jitter</code></td><td>True</td><td>加随机抖动，避免惊群</td></tr>
+              <tr><td><code>retry_on</code></td><td><code>default_retry_on</code></td><td>哪些异常触发重试</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>CachePolicy</h3>
+        <pre data-lang="python" data-file="缓存纯函数节点">from langgraph.types import CachePolicy
+
+builder.add_node(
+    "normalize",
+    normalize,
+    cache_policy=CachePolicy(ttl=3600),
+)</pre>
+
+        <h3>重试与幂等</h3>
+        <ul>
+          <li>读操作可以重试；写操作先确认幂等键。</li>
+          <li>重试预算 = 次数 × 单次超时，不能超过用户可接受的总延迟。</li>
+          <li>缓存键要包含租户、模型版本、索引版本；否则会串数据。</li>
+        </ul>
+
         <h2 id="pitfalls">陷阱与窍门</h2>
         <div class="callout warn">
           <span class="ct">写操作节点重试</span>
@@ -148,8 +210,8 @@ graph = builder.compile()</pre>
 
       </article>
     </main>
-    <script src="../assets/nav.js"></script>
-    <script src="../assets/mini-highlight.js"></script>
-    <script src="../assets/site.js"></script>
+    <script src="../assets/nav.js?v=1.1.0"></script>
+    <script src="../assets/mini-highlight.js?v=1.1.0"></script>
+    <script src="../assets/site.js?v=1.1.0"></script>
   </body>
 </html>

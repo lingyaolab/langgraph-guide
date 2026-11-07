@@ -2,7 +2,7 @@
 
 这是学习站的源码仓库。站点本体在 [`langgraph-learn/`](langgraph-learn/)，可以直接当静态网站部署。
 
-**内容状态**：第 00–18 章 + 00A 图执行实验室 + 附录 A–E，共 25 个内容页，对应站点版本 v1.0.0。
+**内容状态**：第 00–22 章 + 00A 图执行实验室 + 附录 A–E，共 29 个内容页，对应站点版本 v1.1.0。
 
 - **本地看站**：双击 [`langgraph-learn/index.html`](langgraph-learn/index.html)，或在仓库根执行 `python -m http.server 8080` 后访问 <http://localhost:8080/langgraph-learn/>
 - **部署**：见 [DEPLOY.md](DEPLOY.md)（GitHub Pages / Vercel / Netlify / 自建服务器）

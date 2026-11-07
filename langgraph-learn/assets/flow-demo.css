@@ -1,23 +1,23 @@
-/* 00A ChatClient 信息流实验室：暗色 trace 控制台（绿紫主题） */
+/* 00A LangGraph 图执行实验室：暗色 trace 控制台（玫红主题） */
 .fd {
-  --fd-bg: #07120b;
-  --fd-card: rgba(8, 26, 16, 0.88);
-  --fd-line: rgba(134, 189, 120, 0.22);
-  --fd-ink: #e5f2dc;
-  --fd-dim: #9bb59a;
-  --fd-blue: #8bc34a;
-  --fd-cyan: #34d399;
-  --fd-violet: #a3e635;
+  --fd-bg: #16070c;
+  --fd-card: rgba(32, 8, 16, 0.88);
+  --fd-line: rgba(251, 113, 133, 0.22);
+  --fd-ink: #f6e7ec;
+  --fd-dim: #c4a4ad;
+  --fd-blue: #fb7185;
+  --fd-cyan: #f472b6;
+  --fd-violet: #f9a8d4;
   position: relative;
   margin: 18px 0 10px;
   padding: 16px;
-  border: 1px solid rgba(139, 195, 74, 0.32);
+  border: 1px solid rgba(251, 113, 133, 0.32);
   border-radius: 16px;
   background:
-    radial-gradient(1200px 260px at 12% -10%, rgba(52, 211, 153, 0.16), transparent 60%),
-    radial-gradient(900px 300px at 95% 0%, rgba(139, 195, 74, 0.14), transparent 55%),
-    linear-gradient(180deg, #0b1c11 0%, var(--fd-bg) 70%);
-  box-shadow: 0 24px 70px rgba(2, 12, 6, 0.38), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    radial-gradient(1200px 260px at 12% -10%, rgba(244, 114, 182, 0.16), transparent 60%),
+    radial-gradient(900px 300px at 95% 0%, rgba(251, 113, 133, 0.14), transparent 55%),
+    linear-gradient(180deg, #1b0a11 0%, var(--fd-bg) 70%);
+  box-shadow: 0 24px 70px rgba(18, 4, 9, 0.38), inset 0 1px 0 rgba(255, 255, 255, 0.06);
   color: var(--fd-ink);
   overflow: hidden;
 }
@@ -27,8 +27,8 @@
   position: absolute;
   inset: 0;
   pointer-events: none;
-  background-image: linear-gradient(rgba(134, 189, 120, 0.06) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(134, 189, 120, 0.06) 1px, transparent 1px);
+  background-image: linear-gradient(rgba(251, 113, 133, 0.06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(251, 113, 133, 0.06) 1px, transparent 1px);
   background-size: 26px 26px;
   mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.7), transparent 75%);
 }
@@ -49,7 +49,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  color: #cfe3c4;
+  color: #f0d6de;
   font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
   font-size: 10.5px;
   letter-spacing: 0.16em;
@@ -60,19 +60,19 @@
   height: 7px;
   border-radius: 50%;
   background: var(--fd-cyan);
-  box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.6);
+  box-shadow: 0 0 0 0 rgba(244, 114, 182, 0.6);
   animation: fd-pulse 2s infinite;
 }
 
 @keyframes fd-pulse {
-  0% { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.55); }
-  70% { box-shadow: 0 0 0 8px rgba(52, 211, 153, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0); }
+  0% { box-shadow: 0 0 0 0 rgba(244, 114, 182, 0.55); }
+  70% { box-shadow: 0 0 0 8px rgba(244, 114, 182, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(244, 114, 182, 0); }
 }
 
 .fd-level {
   padding: 2px 6px;
-  border: 1px solid rgba(139, 195, 74, 0.35);
+  border: 1px solid rgba(251, 113, 133, 0.35);
   border-radius: 999px;
   color: var(--fd-blue);
   letter-spacing: 0.08em;
@@ -86,7 +86,7 @@
   padding: 3px;
   border: 1px solid var(--fd-line);
   border-radius: 999px;
-  background: rgba(2, 12, 6, 0.55);
+  background: rgba(18, 4, 9, 0.55);
 }
 
 .fd-mode,
@@ -106,14 +106,14 @@
 .fd-mode:hover,
 .fd-controls button:hover {
   color: #fff;
-  border-color: rgba(134, 189, 120, 0.35);
+  border-color: rgba(251, 113, 133, 0.35);
 }
 
 .fd-mode[aria-pressed="true"] {
-  background: linear-gradient(135deg, rgba(52, 211, 153, 0.2), rgba(139, 195, 74, 0.22));
-  color: #ecfccb;
+  background: linear-gradient(135deg, rgba(244, 114, 182, 0.2), rgba(251, 113, 133, 0.22));
+  color: #ffe4e6;
   font-weight: 600;
-  box-shadow: inset 0 0 0 1px rgba(52, 211, 153, 0.32);
+  box-shadow: inset 0 0 0 1px rgba(244, 114, 182, 0.32);
 }
 
 .fd-controls {
@@ -125,7 +125,7 @@
 
 .fd-controls button {
   border-color: var(--fd-line);
-  background: rgba(8, 26, 16, 0.72);
+  background: rgba(32, 8, 16, 0.72);
 }
 
 .fd-controls button:disabled {
@@ -134,7 +134,7 @@
 }
 
 #fd-play[aria-pressed="true"] {
-  color: #081a0d;
+  color: #1a0710;
   background: linear-gradient(135deg, var(--fd-cyan), var(--fd-blue));
   border-color: transparent;
   font-weight: 700;
@@ -156,7 +156,7 @@
 .fd-panel {
   border: 1px solid var(--fd-line);
   border-radius: 12px;
-  background: rgba(2, 12, 6, 0.5);
+  background: rgba(18, 4, 9, 0.5);
 }
 
 .fd-canvas {
@@ -169,7 +169,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  color: #6b8a70;
+  color: #9c7380;
   font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
   font-size: 10px;
   letter-spacing: 0.12em;
@@ -177,7 +177,7 @@
 }
 
 .fd-counter {
-  color: #bef264;
+  color: #fda4af;
 }
 
 .fd-rail-wrap {
@@ -200,7 +200,7 @@
   overflow: visible;
   padding: 0;
   scrollbar-width: thin;
-  scrollbar-color: rgba(139, 195, 74, 0.4) transparent;
+  scrollbar-color: rgba(251, 113, 133, 0.4) transparent;
 }
 
 .fd-node {
@@ -209,9 +209,9 @@
   flex: 0 0 auto;
   min-height: 74px;
   padding: 9px 10px;
-  border: 1px solid rgba(134, 189, 120, 0.24);
+  border: 1px solid rgba(251, 113, 133, 0.24);
   border-radius: 10px;
-  background: linear-gradient(180deg, rgba(8, 26, 16, 0.94), rgba(5, 16, 10, 0.96));
+  background: linear-gradient(180deg, rgba(32, 8, 16, 0.94), rgba(16, 4, 9, 0.96));
   color: var(--fd-ink);
   font: inherit;
   text-align: left;
@@ -222,7 +222,7 @@
 }
 
 .fd-node:hover {
-  border-color: rgba(139, 195, 74, 0.7);
+  border-color: rgba(251, 113, 133, 0.7);
   transform: translateY(-1px);
 }
 
@@ -231,15 +231,15 @@
 }
 
 .fd-node.active {
-  border-color: rgba(52, 211, 153, 0.9);
-  background: linear-gradient(180deg, rgba(6, 46, 30, 0.95), rgba(5, 20, 12, 0.98));
-  box-shadow: 0 0 0 1px rgba(52, 211, 153, 0.28), 0 0 26px rgba(52, 211, 153, 0.2);
+  border-color: rgba(244, 114, 182, 0.9);
+  background: linear-gradient(180deg, rgba(60, 10, 24, 0.95), rgba(18, 5, 10, 0.98));
+  box-shadow: 0 0 0 1px rgba(244, 114, 182, 0.28), 0 0 26px rgba(244, 114, 182, 0.2);
   transform: translateY(-2px);
 }
 
 .fd-node .fd-idx {
   display: block;
-  color: #6b8a70;
+  color: #9c7380;
   font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
   font-size: 10px;
   letter-spacing: 0.08em;
@@ -265,7 +265,7 @@
   opacity: 0.85;
 }
 
-.fd-badge.l2 { color: #a3e635; }
+.fd-badge.l2 { color: #f9a8d4; }
 .fd-badge.l3 { color: #4ade80; }
 
 .fd-node.active::after {
@@ -275,7 +275,7 @@
   left: -55%;
   width: 45%;
   height: 100%;
-  background: linear-gradient(90deg, transparent, rgba(52, 211, 153, 0.13), transparent);
+  background: linear-gradient(90deg, transparent, rgba(244, 114, 182, 0.13), transparent);
   transform: skewX(-18deg);
   animation: fd-scan 2.6s infinite;
   pointer-events: none;
@@ -296,7 +296,7 @@
 .fd-node .fd-out {
   display: block;
   margin-top: 5px;
-  color: #9bb59a;
+  color: #c4a4ad;
   font-size: 10.5px;
   line-height: 1.35;
 }
@@ -313,7 +313,7 @@
   height: 8px;
   border-radius: 50%;
   background: #86efac;
-  box-shadow: 0 0 0 4px rgba(52, 211, 153, 0.12), 0 0 18px rgba(52, 211, 153, 0.9);
+  box-shadow: 0 0 0 4px rgba(244, 114, 182, 0.12), 0 0 18px rgba(244, 114, 182, 0.9);
   opacity: 0;
   transition: left 0.35s ease, opacity 0.2s ease;
   pointer-events: none;
@@ -328,7 +328,7 @@
   height: 3px;
   margin: 6px 2px 0;
   border-radius: 999px;
-  background: rgba(134, 189, 120, 0.14);
+  background: rgba(251, 113, 133, 0.14);
   overflow: hidden;
 }
 
@@ -361,7 +361,7 @@
 }
 
 .fd-step {
-  color: #6b8a70;
+  color: #9c7380;
   font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
   font-size: 10.5px;
   letter-spacing: 0.1em;
@@ -383,7 +383,7 @@
 }
 
 .fd-detail dt {
-  color: #6b8a70;
+  color: #9c7380;
   font-size: 11px;
   padding-top: 1px;
 }
@@ -394,11 +394,11 @@
 }
 
 .fd-detail code {
-  color: #bef264;
+  color: #fda4af;
 }
 
 .fd-json-wrap {
-  border: 1px solid rgba(134, 189, 120, 0.18);
+  border: 1px solid rgba(251, 113, 133, 0.18);
   border-radius: 8px;
   background: #050f08;
   overflow: hidden;
@@ -408,15 +408,15 @@
   display: flex;
   justify-content: space-between;
   padding: 5px 8px;
-  border-bottom: 1px solid rgba(134, 189, 120, 0.14);
-  color: #6b8a70;
+  border-bottom: 1px solid rgba(251, 113, 133, 0.14);
+  color: #9c7380;
   font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
   font-size: 10px;
   letter-spacing: 0.08em;
 }
 
 .fd-json-head span {
-  color: #34d399;
+  color: #f472b6;
 }
 
 .fd-json {
@@ -424,7 +424,7 @@
   padding: 8px;
   max-height: 190px;
   overflow: auto;
-  color: #a3e635;
+  color: #f9a8d4;
   font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
   font-size: 11px;
   line-height: 1.55;
@@ -442,9 +442,9 @@
 
 .fd-event {
   padding: 2px 6px;
-  border: 1px solid rgba(139, 195, 74, 0.25);
+  border: 1px solid rgba(251, 113, 133, 0.25);
   border-radius: 999px;
-  color: #a3e635;
+  color: #f9a8d4;
   font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
   font-size: 10px;
   animation: fd-in 0.2s ease;
@@ -457,7 +457,7 @@
 
 .fd-link {
   margin: 10px 0 0;
-  color: #6b8a70;
+  color: #9c7380;
   font-size: 11.5px;
   grid-column: 1 / -1;
 }

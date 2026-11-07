@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="LangGraph get_graph / draw_mermaid / draw_png、stream updates 调试、checkpoint 历史与常见故障定位。" />
+    <meta property="og:type" content="article" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:site_name" content="LangGraph 1.2.20 学习站" />
+    <meta property="og:title" content="20 可视化与调试：把图画出来，再定位问题 · LangGraph 1.2.20 学习站" />
+    <meta property="og:description" content="LangGraph get_graph / draw_mermaid / draw_png、stream updates 调试、checkpoint 历史与常见故障定位。" />
+    <title>20 可视化与调试：把图画出来，再定位问题 · LangGraph 1.2.20 学习站</title>
+    <script>
+      try {
+        var t = localStorage.getItem("as-learn-theme");
+        if (!t) t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    </script>
+    <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
+    <link rel="stylesheet" href="../assets/base.css?v=1.1.0" />
+    <link rel="stylesheet" href="../assets/diagrams.css?v=1.1.0" />
+  </head>
+  <body data-page="20-visualization-debug" data-root="..">
+    <main>
+      <article class="article">
+
+        <h1>20 · 可视化与调试：把图画出来，再定位问题</h1>
+        <p class="lede">
+          图的问题通常不是「代码报错」，而是「它走了你没预料的那条边」。
+          这一章先教你把图导出，再用 updates / checkpoint 历史定位是哪一步偏了。
+        </p>
+
+        <h2 id="goals">读完你能做到</h2>
+        <ul class="goals">
+          <li>用 <code>get_graph().draw_mermaid()</code> 导出图结构</li>
+          <li>用 <code>stream_mode="updates"</code> 看每个节点改了什么</li>
+          <li>用 checkpoint 历史定位「从哪一步开始不对」</li>
+          <li>建立一套从现象到层的排查顺序</li>
+        </ul>
+
+        <h2 id="why">先说为什么：先看结构，再看状态</h2>
+        <p>
+          调试图有两个维度：结构（有哪些节点、边、分支）和状态（每一步改了什么）。
+          先画结构，能排除「边连错」；再看 updates，能定位「哪个节点改错」。
+          两个都不看，只盯着最终输出，很难判断问题在哪。
+        </p>
+
+        <h2 id="minimal">最小可跑：导出 Mermaid</h2>
+        <pre data-lang="python" data-file="draw.py">print(graph.get_graph().draw_mermaid())</pre>
+        <p>
+          <code>get_graph</code>
+          <span class="src" data-src="libs/langgraph/langgraph/pregel/main.py:909">main.py:909</span>
+          返回可绘制的图对象；<code>draw_mermaid()</code> 输出文本，
+          <code>draw_png()</code> 需要额外依赖。
+        </p>
+
+        <h2 id="graph">图结构：节点、边与命名空间</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>你看到</th><th>说明</th></tr></thead>
+            <tbody>
+              <tr><td><code>__start__</code> / <code>__end__</code></td><td>虚拟入口 / 出口</td></tr>
+              <tr><td>条件边标签</td><td>路由函数返回的路径 key</td></tr>
+              <tr><td>子图节点</td><td>展开后有独立命名空间</td></tr>
+              <tr><td>循环回边</td><td>条件边指回上游</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="debug">状态调试：updates 与历史</h2>
+        <pre data-lang="python" data-file="updates.py">for update in graph.stream(inputs, stream_mode="updates"):
+    print(update)</pre>
+        <p>
+          <code>updates</code> 会告诉你「哪个节点返回了什么」。如果某个节点返回的字段不对，
+          再去看它的输入；输入不对，就继续往上游找。
+        </p>
+        <pre data-lang="python" data-file="历史.py">for snap in graph.get_state_history(config):
+    print(snap.metadata["step"], snap.next, snap.values)</pre>
+        <p>
+          历史从新到旧。找到「第一次出现异常值」的快照，它的前一步通常就是问题节点。
+        </p>
+
+        
+        
+        <h2 id="practice">工程实践：三种写法与排查</h2>
+        <h3>三种调试视角</h3>
+        <pre data-lang="python" data-file="结构 / 路径 / 状态">print(graph.get_graph().draw_mermaid())          # 结构
+for u in graph.stream(inputs, stream_mode="updates"): print(u)  # 路径
+for s in graph.get_state_history(config): print(s.metadata, s.next)  # 状态</pre>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>现象</th><th>先看</th></tr></thead>
+            <tbody>
+              <tr><td>走了意外分支</td><td>结构图 + 路由函数输入</td></tr>
+              <tr><td>某字段被覆盖</td><td>updates 里哪个节点写了它</td></tr>
+              <tr><td>恢复后状态不对</td><td>checkpoint 历史第一次偏离</td></tr>
+              <tr><td>子图报错</td><td>事件命名空间 / 子图历史</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="deep">再深入一点：实现细节与边界</h2>
+        <h3>从事件看执行顺序</h3>
+        <pre data-lang="python" data-file="stream_events">for event in graph.stream_events(inputs, version="v2"):
+    if event["event"] in ("on_chain_start", "on_chain_end"):
+        print(event["name"], event["event"])</pre>
+        <p>
+          <code>stream_events</code>
+          <span class="src" data-src="libs/langgraph/langgraph/pregel/main.py:3703">main.py:3703</span>
+          比 <code>updates</code> 更细，能看到链、模型与工具的进入 / 退出。
+        </p>
+
+        <h3>四层排查法</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>层</th><th>看什么</th><th>工具</th></tr></thead>
+            <tbody>
+              <tr><td>结构</td><td>节点 / 边 / 分支</td><td><code>get_graph().draw_mermaid()</code></td></tr>
+              <tr><td>路径</td><td>走过哪些节点</td><td><code>stream_mode="updates"</code></td></tr>
+              <tr><td>状态</td><td>每步 state 变化</td><td><code>get_state_history</code></td></tr>
+              <tr><td>外部</td><td>模型 / 工具 / 网络</td><td>trace / 日志</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>不要只依赖最终输出</h3>
+        <p>
+          最终输出正确不代表中间路径正确。测试要断言路径；
+          调试要找到「第一次偏离预期」的节点，而不是从最后倒推。
+        </p>
+
+        <h2 id="pitfalls">陷阱与窍门</h2>
+        <div class="callout warn">
+          <span class="ct">只看最终 state</span>
+          <p><strong>你会看到</strong>知道错了但不知道哪步错。<strong>因为</strong>中间状态被覆盖。<strong>改成</strong>用 updates 或 checkpoint 历史。</p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">把 draw_png 当必选</span>
+          <p><strong>你会看到</strong>缺少 graphviz 依赖。<strong>因为</strong>PNG 渲染需要额外安装。<strong>改成</strong>先用 Mermaid 文本，或把文本贴进支持 Mermaid 的编辑器。</p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">子图报错但父图看不出</span>
+          <p><strong>你会看到</strong>父图只显示子图节点失败。<strong>因为</strong>命名空间被折叠。<strong>改成</strong>看事件里的 <code>checkpoint_ns</code> 或子图自己的历史。</p>
+        </div>
+
+        <h2 id="quiz">自检三问</h2>
+        <ol>
+          <li>图结构调试与状态调试分别解决什么问题？</li>
+          <li><code>updates</code> 与 <code>values</code> 哪个更适合定位「谁改错了」？</li>
+          <li>子图问题为什么要看命名空间？</li>
+        </ol>
+
+        <h2 id="exercise">20 分钟动手练习</h2>
+        <ol>
+          <li>把 03 章的路由图导出 Mermaid，确认三条边都在。</li>
+          <li>用 updates 打印每个节点的返回，找出哪个节点改了 route。</li>
+          <li>构造一个子图，观察事件里的命名空间。</li>
+        </ol>
+
+        <h2 id="next">下一步</h2>
+        <p>
+          下一章 <a href="21-runtime-context.html">21 Runtime Context 与配置</a>：
+          图能画、能调之后，把请求级上下文从全局变量里拿出来。
+        </p>
+
+      </article>
+    </main>
+    <script src="../assets/nav.js?v=1.1.0"></script>
+    <script src="../assets/mini-highlight.js?v=1.1.0"></script>
+    <script src="../assets/site.js?v=1.1.0"></script>
+  </body>
+</html>

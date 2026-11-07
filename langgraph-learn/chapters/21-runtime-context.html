@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="LangGraph context_schema、Runtime、configurable 与 get_config：把 user_id、tenant_id、模型选择等请求级上下文安全地传进节点与工具。" />
+    <meta property="og:type" content="article" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:site_name" content="LangGraph 1.2.20 学习站" />
+    <meta property="og:title" content="21 Runtime Context 与配置：请求级上下文不要放全局 · LangGraph 1.2.20 学习站" />
+    <meta property="og:description" content="LangGraph context_schema、Runtime、configurable 与 get_config：把 user_id、tenant_id、模型选择等请求级上下文安全地传进节点与工具。" />
+    <title>21 Runtime Context 与配置：请求级上下文不要放全局 · LangGraph 1.2.20 学习站</title>
+    <script>
+      try {
+        var t = localStorage.getItem("as-learn-theme");
+        if (!t) t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    </script>
+    <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
+    <link rel="stylesheet" href="../assets/base.css?v=1.1.0" />
+    <link rel="stylesheet" href="../assets/diagrams.css?v=1.1.0" />
+  </head>
+  <body data-page="21-runtime-context" data-root="..">
+    <main>
+      <article class="article">
+
+        <h1>21 · Runtime Context 与配置：请求级上下文不要放全局</h1>
+        <p class="lede">
+          多用户服务里，最容易出的 bug 是「上一个请求的 user_id 泄漏到下一个请求」。
+          LangGraph 用 <code>context_schema</code> + <code>Runtime</code> 把请求级上下文显式传进节点，
+          而不是藏在全局变量或提示词里。
+        </p>
+
+        <h2 id="goals">读完你能做到</h2>
+        <ul class="goals">
+          <li>用 <code>context_schema</code> 定义请求级上下文</li>
+          <li>在节点里通过 <code>Runtime</code> 读取 <code>context</code> 与 <code>store</code></li>
+          <li>用 <code>configurable</code> 传 thread_id 等运行配置</li>
+          <li>区分「图状态」「运行上下文」「长期存储」三层</li>
+        </ul>
+
+        <h2 id="why">先说为什么：全局变量在并发下一定串</h2>
+        <p>
+          Web 服务同时处理多个请求。把 <code>current_user</code> 放在模块全局变量里，
+          两个请求交错时就会互相覆盖。上下文必须是「每次调用一份」的，
+          并且只能通过显式参数进入节点。
+        </p>
+
+        <h2 id="minimal">最小可跑：context_schema + Runtime</h2>
+        <pre data-lang="python" data-file="context.py">from dataclasses import dataclass
+
+from langgraph.graph import END, START, StateGraph
+from langgraph.runtime import Runtime
+
+
+@dataclass
+class Context:
+    user_id: str
+    tenant_id: str
+
+
+class State(dict):
+    pass
+
+
+def whoami(state: State, runtime: Runtime[Context]) -&gt; dict:
+    ctx = runtime.context
+    return {"user": ctx.user_id, "tenant": ctx.tenant_id}
+
+
+builder = StateGraph(State, context_schema=Context)
+builder.add_node("whoami", whoami)
+builder.add_edge(START, "whoami")
+builder.add_edge("whoami", END)
+graph = builder.compile()
+
+out = graph.invoke({}, context=Context(user_id="alice", tenant_id="t1"))
+print(out)</pre>
+        <p>
+          <code>context_schema</code>
+          <span class="src" data-src="libs/langgraph/langgraph/graph/state.py:212">state.py:212</span>
+          声明上下文类型；<code>Runtime</code>
+          <span class="src" data-src="libs/langgraph/langgraph/runtime.py:125">runtime.py:125</span>
+          在节点里提供 <code>context</code>、<code>store</code>、<code>stream_writer</code> 等运行时能力。
+        </p>
+
+        <h2 id="config">configurable：thread 与自定义配置</h2>
+        <pre data-lang="python" data-file="config.py">config = {
+    "configurable": {
+        "thread_id": "u-1",
+        "model": "deepseek-chat",
+    }
+}
+graph.invoke({}, config, context=Context(user_id="alice", tenant_id="t1"))</pre>
+        <p>
+          <code>configurable</code> 是「运行配置」，会进入 checkpoint 与追踪；
+          <code>context</code> 是「本次调用的依赖」，适合用户、租户、数据库连接等不适合持久化的东西。
+        </p>
+
+        <h2 id="layers">三层上下文不要混</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>层</th><th>放什么</th><th>生命周期</th></tr></thead>
+            <tbody>
+              <tr><td>State</td><td>对话消息、任务中间结果</td><td>thread 级，进 checkpoint</td></tr>
+              <tr><td>Runtime Context</td><td>user_id、tenant_id、请求级客户端</td><td>单次调用</td></tr>
+              <tr><td>Store</td><td>用户偏好、跨会话事实</td><td>跨 thread</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        
+        
+        <h2 id="practice">工程实践：三种写法与排查</h2>
+        <h3>三种上下文来源</h3>
+        <pre data-lang="python" data-file="state / context / config">state["user_note"]          # 业务数据
+runtime.context.user_id     # 请求级身份
+config["configurable"]      # thread / 运行配置</pre>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>现象</th><th>原因</th><th>改法</th></tr></thead>
+            <tbody>
+              <tr><td>并发串号</td><td>全局 current_user</td><td>Runtime Context</td></tr>
+              <tr><td>checkpoint 里有密钥</td><td>身份/密钥放 state</td><td>只放 id / 引用</td></tr>
+              <tr><td>恢复后 context 丢失</td><td>context 不持久化</td><td>需要持久化的放 config / state</td></tr>
+              <tr><td>读不到 thread_id</td><td>没传 config</td><td>所有调用带同一 config</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="deep">再深入一点：实现细节与边界</h2>
+        <h3>Runtime 里还有什么</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>属性</th><th>用途</th></tr></thead>
+            <tbody>
+              <tr><td><code>context</code></td><td>本次调用的用户 / 租户 / 客户端</td></tr>
+              <tr><td><code>store</code></td><td>长期记忆</td></tr>
+              <tr><td><code>stream_writer</code></td><td>发自定义事件</td></tr>
+              <tr><td><code>previous</code></td><td>上一次运行的信息</td></tr>
+              <tr><td><code>execution_info</code></td><td>运行元数据</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>context 与 config 的取舍</h3>
+        <p>
+          需要进入 checkpoint / trace 的放 <code>configurable</code>；
+          不应持久化的依赖（数据库连接、请求级客户端）放 <code>context</code>。
+          两者都能在节点里读到，但生命周期不同。
+        </p>
+
+        <h3>并发验证</h3>
+        <pre data-lang="python" data-file="并发不串">async def run(user):
+    return await graph.ainvoke({}, context=Context(user_id=user, tenant_id="t"))
+
+await asyncio.gather(run("alice"), run("bob"))</pre>
+
+        <h2 id="pitfalls">陷阱与窍门</h2>
+        <div class="callout warn">
+          <span class="ct">把用户身份放进 state</span>
+          <p><strong>你会看到</strong>身份被写进 checkpoint，甚至被共享。<strong>因为</strong>state 会持久化。<strong>改成</strong>身份放 Runtime Context，state 只放业务数据。</p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">在工具里读全局 current_user</span>
+          <p><strong>你会看到</strong>并发串号。<strong>因为</strong>全局变量没有请求隔离。<strong>改成</strong>通过 <code>Runtime</code> 或工具参数显式传。</p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">把数据库连接放进 state</span>
+          <p><strong>你会看到</strong>序列化失败或连接泄漏。<strong>因为</strong>state 要写 checkpoint。<strong>改成</strong>连接放 Runtime Context，state 只放 id。</p>
+        </div>
+
+        <h2 id="quiz">自检三问</h2>
+        <ol>
+          <li>State、Runtime Context、Store 各放什么？</li>
+          <li>为什么用户身份不能放 state？</li>
+          <li><code>configurable</code> 与 <code>context</code> 的区别是什么？</li>
+        </ol>
+
+        <h2 id="exercise">20 分钟动手练习</h2>
+        <ol>
+          <li>给最小例子加 <code>tenant_id</code>，在 Store 的 namespace 里使用它。</li>
+          <li>用两个并发调用传不同 user_id，确认结果不串。</li>
+          <li>把 user_id 改放进 state，观察 checkpoint 里是否出现它。</li>
+        </ol>
+
+        <h2 id="next">下一步</h2>
+        <p>
+          下一章 <a href="22-security-multitenancy.html">22 安全与多租户</a>：
+          上下文分清之后，再处理 thread、Store 与工具权限的隔离。
+        </p>
+
+      </article>
+    </main>
+    <script src="../assets/nav.js?v=1.1.0"></script>
+    <script src="../assets/mini-highlight.js?v=1.1.0"></script>
+    <script src="../assets/site.js?v=1.1.0"></script>
+  </body>
+</html>

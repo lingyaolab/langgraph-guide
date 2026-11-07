@@ -18,8 +18,8 @@
       } catch (e) {}
     </script>
     <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
-    <link rel="stylesheet" href="../assets/base.css" />
-    <link rel="stylesheet" href="../assets/diagrams.css" />
+    <link rel="stylesheet" href="../assets/base.css?v=1.1.0" />
+    <link rel="stylesheet" href="../assets/diagrams.css?v=1.1.0" />
   </head>
   <body data-page="12-prebuilt-agent" data-root="..">
     <main>
@@ -120,6 +120,65 @@ agent.invoke({"messages": [("user", "北京天气如何？")]}, config)</pre>
           </p>
         </div>
 
+        
+        
+        <h2 id="practice">工程实践：三种写法与排查</h2>
+        <h3>prebuilt 的三种装配</h3>
+        <pre data-lang="python" data-file="最小 / 带记忆 / 带存储">agent = create_react_agent(model, tools)
+agent = create_react_agent(model, tools, checkpointer=saver)
+agent = create_react_agent(model, tools, checkpointer=saver, store=store)</pre>
+        <h3>需要自定义时的替代</h3>
+        <pre data-lang="python" data-file="显式图">builder.add_node("agent", agent)
+builder.add_node("tools", ToolNode(tools))
+builder.add_edge(START, "agent")
+builder.add_conditional_edges("agent", tools_condition)
+builder.add_edge("tools", "agent")</pre>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>现象</th><th>原因</th><th>改法</th></tr></thead>
+            <tbody>
+              <tr><td>工具数量不匹配</td><td>model 已 bind 另一组工具</td><td>只传未绑定模型或对齐</td></tr>
+              <tr><td>暂停后无法恢复</td><td>没挂 checkpointer</td><td>挂上再 interrupt</td></tr>
+              <tr><td>越改越复杂</td><td>把 prebuilt 当架构</td><td>改显式图</td></tr>
+              <tr><td>行为不稳定</td><td>流程写在 prompt</td><td>流程放节点 / 边</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="deep">再深入一点：实现细节与边界</h2>
+        <h3>create_react_agent 的常用参数</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>参数</th><th>作用</th><th>建议</th></tr></thead>
+            <tbody>
+              <tr><td><code>model</code></td><td>ChatModel 或模型名</td><td>未绑定工具时会自动绑定</td></tr>
+              <tr><td><code>tools</code></td><td>工具列表或 ToolNode</td><td>与模型绑定工具保持一致</td></tr>
+              <tr><td><code>prompt</code></td><td>系统提示 / 动态提示</td><td>不要把流程写进提示词</td></tr>
+              <tr><td><code>checkpointer</code></td><td>持久化</td><td>多轮与 HITL 必需</td></tr>
+              <tr><td><code>store</code></td><td>长期记忆</td><td>跨 thread 共享</td></tr>
+              <tr><td><code>interrupt_before</code></td><td>节点前暂停</td><td>调试 / 粗粒度确认</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>什么时候显式搭图</h3>
+        <p>
+          需要自定义 state、多个 Agent、复杂 HITL、审计节点或非 messages 状态时，
+          直接把 11 章的图抄过来改，比继续给 prebuilt 加参数更可控。
+        </p>
+        <pre data-lang="python" data-file="显式图的最小骨架">builder = StateGraph(MessagesState)
+builder.add_node("agent", agent)
+builder.add_node("tools", ToolNode(tools))
+builder.add_edge(START, "agent")
+builder.add_conditional_edges("agent", tools_condition)
+builder.add_edge("tools", "agent")</pre>
+
+        <h3>版本方向</h3>
+        <p>
+          1.2.20 的仓库说明把 prebuilt 定为维护模式：修 bug，不加新 Agent 能力。
+          新项目应把 LangGraph 当运行时，Agent 层用 harness 或显式图。
+        </p>
+
         <h2 id="pitfalls">陷阱与窍门</h2>
         <div class="callout warn">
           <span class="ct">模型已经 bind_tools，但 tools 参数不一致</span>
@@ -156,8 +215,8 @@ agent.invoke({"messages": [("user", "北京天气如何？")]}, config)</pre>
 
       </article>
     </main>
-    <script src="../assets/nav.js"></script>
-    <script src="../assets/mini-highlight.js"></script>
-    <script src="../assets/site.js"></script>
+    <script src="../assets/nav.js?v=1.1.0"></script>
+    <script src="../assets/mini-highlight.js?v=1.1.0"></script>
+    <script src="../assets/site.js?v=1.1.0"></script>
   </body>
 </html>

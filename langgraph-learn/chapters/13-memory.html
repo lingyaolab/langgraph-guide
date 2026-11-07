@@ -18,8 +18,8 @@
       } catch (e) {}
     </script>
     <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
-    <link rel="stylesheet" href="../assets/base.css" />
-    <link rel="stylesheet" href="../assets/diagrams.css" />
+    <link rel="stylesheet" href="../assets/base.css?v=1.1.0" />
+    <link rel="stylesheet" href="../assets/diagrams.css?v=1.1.0" />
   </head>
   <body data-page="13-memory" data-root="..">
     <main>
@@ -122,6 +122,62 @@ print(graph.invoke({"messages": [("user", "我的语气偏好？")]}, config2))<
           </table>
         </div>
 
+        
+        
+        <h2 id="practice">工程实践：三种写法与排查</h2>
+        <h3>Store 的读写与搜索</h3>
+        <pre data-lang="python" data-file="put / get / search">store.put(("users", "alice"), "preference", {"tone": "concise"})
+item = store.get(("users", "alice"), "preference")
+items = store.search(("users", "alice"), limit=10)</pre>
+        <h3>在节点里注入 store</h3>
+        <pre data-lang="python" data-file="store 参数">def recall(state: dict, store) -&gt; dict:
+    item = store.get(("users", state["user_id"]), "preference")
+    return {"tone": item.value["tone"] if item else "default"}</pre>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>现象</th><th>原因</th><th>改法</th></tr></thead>
+            <tbody>
+              <tr><td>新 thread 不记得偏好</td><td>偏好放在 messages</td><td>移到 Store</td></tr>
+              <tr><td>Store 无限增长</td><td>把历史也写进去</td><td>只存稳定事实</td></tr>
+              <tr><td>串用户</td><td>namespace 没带 user</td><td>加租户 / 用户前缀</td></tr>
+              <tr><td>模型不知道偏好</td><td>Store 不会自动注入</td><td>节点里读取并写 messages</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="deep">再深入一点：实现细节与边界</h2>
+        <h3>按 namespace 前缀搜索</h3>
+        <pre data-lang="python" data-file="搜索用户偏好">items = store.search(
+    ("users",),
+    filter={"tone": "concise"},
+    limit=10,
+)
+for item in items:
+    print(item.namespace, item.key, item.value)</pre>
+        <p>
+          <code>search</code>
+          <span class="src" data-src="libs/checkpoint/langgraph/store/base/__init__.py:784">base/__init__.py:784</span>
+          的第一个参数是 namespace 前缀，不是完整 key。
+        </p>
+
+        <h3>namespace 设计</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>数据</th><th>namespace</th><th>key</th></tr></thead>
+            <tbody>
+              <tr><td>用户偏好</td><td><code>("users", user_id)</code></td><td><code>"preference"</code></td></tr>
+              <tr><td>团队事实</td><td><code>("tenants", tenant_id, "facts")</code></td><td>事实 id</td></tr>
+              <tr><td>技能 / 文档索引</td><td><code>("kb", kb_id)</code></td><td>文档 id</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>短期记忆的压缩</h3>
+        <p>
+          checkpointer 不会自动压缩。要在节点里实现窗口或摘要，
+          并把压缩后的 messages 写回 state；压缩策略本身要可测试。
+        </p>
+
         <h2 id="pitfalls">陷阱与窍门</h2>
         <div class="callout warn">
           <span class="ct">把对话历史写进 Store</span>
@@ -158,8 +214,8 @@ print(graph.invoke({"messages": [("user", "我的语气偏好？")]}, config2))<
 
       </article>
     </main>
-    <script src="../assets/nav.js"></script>
-    <script src="../assets/mini-highlight.js"></script>
-    <script src="../assets/site.js"></script>
+    <script src="../assets/nav.js?v=1.1.0"></script>
+    <script src="../assets/mini-highlight.js?v=1.1.0"></script>
+    <script src="../assets/site.js?v=1.1.0"></script>
   </body>
 </html>

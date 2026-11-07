@@ -18,8 +18,8 @@
       } catch (e) {}
     </script>
     <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
-    <link rel="stylesheet" href="../assets/base.css" />
-    <link rel="stylesheet" href="../assets/diagrams.css" />
+    <link rel="stylesheet" href="../assets/base.css?v=1.1.0" />
+    <link rel="stylesheet" href="../assets/diagrams.css?v=1.1.0" />
   </head>
   <body data-page="14-multi-agent" data-root="..">
     <main>
@@ -133,6 +133,62 @@ def researcher(state: dict) -> Command:
           <li>路由错误比单 Agent 更难发现：先看「谁最后改了 state」，再看路由日志。</li>
         </ul>
 
+        
+        
+        <h2 id="practice">工程实践：三种写法与排查</h2>
+        <h3>中心路由与交接</h3>
+        <pre data-lang="python" data-file="Supervisor">def supervisor(state: dict) -&gt; dict:
+    return {"next": "researcher" if state["needs"] == "facts" else "coder"}</pre>
+        <pre data-lang="python" data-file="handoff">def researcher(state: dict) -&gt; Command:
+    return Command(update={"owner": "coder"}, goto="coder")</pre>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>现象</th><th>原因</th><th>改法</th></tr></thead>
+            <tbody>
+              <tr><td>两个 Agent 踢皮球</td><td>没有轮次上限</td><td>加 rounds / END</td></tr>
+              <tr><td>上下文爆炸</td><td>共享全部 messages</td><td>只共享必要字段</td></tr>
+              <tr><td>路由错</td><td>提示词模糊</td><td>用结构化输出 / 规则</td></tr>
+              <tr><td>成本翻倍</td><td>把多 Agent 当并行</td><td>需要并行用 Send</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="deep">再深入一点：实现细节与边界</h2>
+        <h3>用 Command 做 handoff</h3>
+        <pre data-lang="python" data-file="交接">from langgraph.types import Command
+
+
+def researcher(state: dict) -&gt; Command:
+    return Command(
+        update={"owner": "coder", "notes": state.get("notes", "") + "\n资料"},
+        goto="coder",
+    )</pre>
+
+        <h3>Supervisor 的轮次上限</h3>
+        <pre data-lang="python" data-file="防止踢皮球">class State(TypedDict):
+    task: str
+    owner: str
+    rounds: int
+
+
+def supervisor(state: State) -&gt; dict:
+    if state["rounds"] &gt;= 6:
+        return {"owner": "END"}
+    return {"owner": "researcher", "rounds": state["rounds"] + 1}</pre>
+
+        <h3>共享状态的边界</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>共享什么</th><th>建议</th></tr></thead>
+            <tbody>
+              <tr><td>任务目标、验收标准</td><td>共享</td></tr>
+              <tr><td>每个 Agent 的完整推理</td><td>不共享，容易污染</td></tr>
+              <tr><td>工具调用结果</td><td>按需摘要后共享</td></tr>
+              <tr><td>用户偏好</td><td>放 Store，不进 messages</td></tr>
+            </tbody>
+          </table>
+        </div>
+
         <h2 id="pitfalls">陷阱与窍门</h2>
         <div class="callout warn">
           <span class="ct">两个 Agent 共享全部 messages</span>
@@ -169,8 +225,8 @@ def researcher(state: dict) -> Command:
 
       </article>
     </main>
-    <script src="../assets/nav.js"></script>
-    <script src="../assets/mini-highlight.js"></script>
-    <script src="../assets/site.js"></script>
+    <script src="../assets/nav.js?v=1.1.0"></script>
+    <script src="../assets/mini-highlight.js?v=1.1.0"></script>
+    <script src="../assets/site.js?v=1.1.0"></script>
   </body>
 </html>

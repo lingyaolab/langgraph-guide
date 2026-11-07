@@ -18,8 +18,8 @@
       } catch (e) {}
     </script>
     <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
-    <link rel="stylesheet" href="../assets/base.css" />
-    <link rel="stylesheet" href="../assets/diagrams.css" />
+    <link rel="stylesheet" href="../assets/base.css?v=1.1.0" />
+    <link rel="stylesheet" href="../assets/diagrams.css?v=1.1.0" />
   </head>
   <body data-page="17-capstone" data-root="..">
     <main>
@@ -157,6 +157,61 @@ def approval(state: dict) -> dict:
           <li>验收：有答案、无答案、需要工具、需要确认、断线恢复、多租户隔离。</li>
         </ul>
 
+        
+        
+        <h2 id="practice">工程实践：三种写法与排查</h2>
+        <h3>先跑最小闭环</h3>
+        <pre data-lang="text" data-file="里程碑">M1 单轮问答 → M2 检索 → M3 工具 → M4 HITL → M5 多 Agent</pre>
+        <h3>HITL 与引用</h3>
+        <pre data-lang="python" data-file="approval + citations">ok = interrupt({"question": "是否创建工单？"})
+# 先发 citations，再发 token
+yield {"event": "citations", "data": citations}</pre>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>验收项</th><th>检查</th></tr></thead>
+            <tbody>
+              <tr><td>有答案</td><td>引用正确、内容有依据</td></tr>
+              <tr><td>无答案</td><td>明确说资料中没有</td></tr>
+              <tr><td>工具</td><td>只查当前用户订单</td></tr>
+              <tr><td>写操作</td><td>暂停 → 确认 → 执行</td></tr>
+              <tr><td>恢复</td><td>同 thread 继续，不重复</td></tr>
+              <tr><td>隔离</td><td>看不到别人的会话与偏好</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="deep">再深入一点：实现细节与边界</h2>
+        <h3>approval 节点</h3>
+        <pre data-lang="python" data-file="写操作前确认">from langgraph.types import interrupt
+
+
+def approval(state: dict) -&gt; dict:
+    ok = interrupt({"question": "是否创建退款工单？", "order": state.get("order_id")})
+    return {"approved": bool(ok)}</pre>
+
+        <h3>先发引用再发正文</h3>
+        <pre data-lang="python" data-file="citations 事件">docs = retriever(state["question"])
+citations = sorted({d.metadata["source"] for d in docs})
+yield {"event": "citations", "data": citations}
+
+for token in answer_stream:
+    yield {"event": "token", "data": token}</pre>
+
+        <h3>验收矩阵</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>场景</th><th>预期</th></tr></thead>
+            <tbody>
+              <tr><td>文档里有答案</td><td>回答带正确引用</td></tr>
+              <tr><td>文档里没有答案</td><td>明确说「资料中没有」</td></tr>
+              <tr><td>需要订单工具</td><td>调用工具，结果回到模型</td></tr>
+              <tr><td>写操作</td><td>暂停，确认后执行</td></tr>
+              <tr><td>断线重连</td><td>同一 thread 继续，不重复执行</td></tr>
+              <tr><td>多租户</td><td>看不到别人的会话与偏好</td></tr>
+            </tbody>
+          </table>
+        </div>
+
         <h2 id="pitfalls">陷阱与窍门</h2>
         <div class="callout warn">
           <span class="ct">先接多 Agent 再补状态</span>
@@ -194,8 +249,8 @@ def approval(state: dict) -> dict:
 
       </article>
     </main>
-    <script src="../assets/nav.js"></script>
-    <script src="../assets/mini-highlight.js"></script>
-    <script src="../assets/site.js"></script>
+    <script src="../assets/nav.js?v=1.1.0"></script>
+    <script src="../assets/mini-highlight.js?v=1.1.0"></script>
+    <script src="../assets/site.js?v=1.1.0"></script>
   </body>
 </html>

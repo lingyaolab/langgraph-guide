@@ -18,8 +18,8 @@
       } catch (e) {}
     </script>
     <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
-    <link rel="stylesheet" href="../assets/base.css" />
-    <link rel="stylesheet" href="../assets/diagrams.css" />
+    <link rel="stylesheet" href="../assets/base.css?v=1.1.0" />
+    <link rel="stylesheet" href="../assets/diagrams.css?v=1.1.0" />
   </head>
   <body data-page="15-testing-observability" data-root="..">
     <main>
@@ -94,6 +94,58 @@ assert any("billing" in step for step in steps)</pre>
           <li>错误按节点分类：模型 429、工具异常、状态冲突、checkpoint 失败。</li>
         </ul>
 
+        
+        
+        <h2 id="practice">工程实践：三种写法与排查</h2>
+        <h3>图级测试</h3>
+        <pre data-lang="python" data-file="断言路径">steps = list(graph.stream(inputs, stream_mode="updates"))
+nodes = [next(iter(s)) for s in steps if s]
+assert nodes == ["classify", "billing"]</pre>
+        <h3>假模型</h3>
+        <pre data-lang="python" data-file="FakeListChatModel">from langchain_core.language_models.fake_chat_models import FakeListChatModel
+
+model = FakeListChatModel(responses=["固定回复"])</pre>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>现象</th><th>原因</th><th>改法</th></tr></thead>
+            <tbody>
+              <tr><td>测试慢 / 不稳定</td><td>用真实模型</td><td>假模型 + 路径断言</td></tr>
+              <tr><td>换个措辞就红</td><td>断言自然语言</td><td>断言 state / 路径</td></tr>
+              <tr><td>线上不知道谁慢</td><td>没有 trace</td><td>接 LangSmith / OTel</td></tr>
+              <tr><td>成本失控</td><td>没有 token 指标</td><td>按节点聚合 token</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="deep">再深入一点：实现细节与边界</h2>
+        <h3>用 updates 断言路径</h3>
+        <pre data-lang="python" data-file="路径断言">steps = [
+    update
+    for update in graph.stream(inputs, stream_mode="updates")
+]
+nodes = [next(iter(update)) for update in steps if update]
+assert nodes == ["classify", "billing"]</pre>
+
+        <h3>假模型的两种形态</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>替身</th><th>用途</th></tr></thead>
+            <tbody>
+              <tr><td><code>FakeListChatModel</code></td><td>按顺序返回固定文本</td></tr>
+              <tr><td><code>FakeMessagesListChatModel</code></td><td>返回带 tool_calls 的 AIMessage</td></tr>
+              <tr><td>自定义 <code>BaseChatModel</code></td><td>需要精确控制 metadata / usage</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>观测的最小集合</h3>
+        <ul>
+          <li>每次运行的 trace id 与 thread id。</li>
+          <li>每个节点的耗时、输入 / 输出大小、错误。</li>
+          <li>模型 token、工具调用次数、重试次数。</li>
+          <li>HITL 暂停时长与恢复结果。</li>
+        </ul>
+
         <h2 id="pitfalls">陷阱与窍门</h2>
         <div class="callout warn">
           <span class="ct">用真实模型做单元测试</span>
@@ -130,8 +182,8 @@ assert any("billing" in step for step in steps)</pre>
 
       </article>
     </main>
-    <script src="../assets/nav.js"></script>
-    <script src="../assets/mini-highlight.js"></script>
-    <script src="../assets/site.js"></script>
+    <script src="../assets/nav.js?v=1.1.0"></script>
+    <script src="../assets/mini-highlight.js?v=1.1.0"></script>
+    <script src="../assets/site.js?v=1.1.0"></script>
   </body>
 </html>

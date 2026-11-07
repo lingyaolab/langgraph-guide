@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="LangGraph 多租户安全：thread_id 隔离、Store namespace、工具权限、checkpoint 数据与日志脱敏。" />
+    <meta property="og:type" content="article" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:site_name" content="LangGraph 1.2.20 学习站" />
+    <meta property="og:title" content="22 安全与多租户：thread、Store 与工具边界 · LangGraph 1.2.20 学习站" />
+    <meta property="og:description" content="LangGraph 多租户安全：thread_id 隔离、Store namespace、工具权限、checkpoint 数据与日志脱敏。" />
+    <title>22 安全与多租户：thread、Store 与工具边界 · LangGraph 1.2.20 学习站</title>
+    <script>
+      try {
+        var t = localStorage.getItem("as-learn-theme");
+        if (!t) t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    </script>
+    <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
+    <link rel="stylesheet" href="../assets/base.css?v=1.1.0" />
+    <link rel="stylesheet" href="../assets/diagrams.css?v=1.1.0" />
+  </head>
+  <body data-page="22-security-multitenancy" data-root="..">
+    <main>
+      <article class="article">
+
+        <h1>22 · 安全与多租户：thread、Store 与工具边界</h1>
+        <p class="lede">
+          多租户不是「加个 user_id」。同一个 checkpointer、同一个 Store、同一套工具，
+          任何一处漏了隔离，都会让用户看到别人的数据。这一章按数据面逐层检查。
+        </p>
+
+        <h2 id="goals">读完你能做到</h2>
+        <ul class="goals">
+          <li>用 thread_id + 租户前缀隔离会话</li>
+          <li>给 Store 的 namespace 加租户边界</li>
+          <li>在工具层做权限检查，而不是只靠提示词</li>
+          <li>知道 checkpoint / 日志里哪些数据不能落盘</li>
+        </ul>
+
+        <h2 id="why">先说为什么：模型不会替你守边界</h2>
+        <p>
+          「不要查别人的订单」写在提示词里，模型仍可能被诱导。
+          真正的隔离必须在代码层：查询条件带租户、工具检查身份、
+          Store 的 key 带租户、checkpoint 不跨 thread 读。
+        </p>
+
+        <h2 id="minimal">最小可跑：带租户的上下文</h2>
+        <pre data-lang="python" data-file="tenant.py">from dataclasses import dataclass
+
+from langgraph.runtime import Runtime
+
+
+@dataclass
+class Context:
+    user_id: str
+    tenant_id: str
+
+
+def load_orders(state: dict, runtime: Runtime[Context]) -&gt; dict:
+    ctx = runtime.context
+    rows = db.query(
+        "select * from orders where tenant_id = ? and user_id = ?",
+        (ctx.tenant_id, ctx.user_id),
+    )
+    return {"orders": rows}</pre>
+        <p>
+          身份来自 Runtime Context，不来自模型参数。SQL 条件必须同时带租户与用户，
+          不能只带其中一个。
+        </p>
+
+        <h2 id="thread">thread 隔离</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>数据</th><th>隔离键</th><th>漏了会怎样</th></tr></thead>
+            <tbody>
+              <tr><td>checkpoint / 对话历史</td><td><code>thread_id</code> + 租户</td><td>读到别人的会话</td></tr>
+              <tr><td>Store 偏好</td><td><code>("tenants", tenant_id, "users", user_id)</code></td><td>偏好串号</td></tr>
+              <tr><td>文件 / 工作区</td><td>agent_id + 租户</td><td>文件越权</td></tr>
+              <tr><td>日志 / trace</td><td>租户字段 + 脱敏</td><td>隐私泄漏</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="tools">工具权限</h2>
+        <p>
+          工具的第一行应该是权限检查：这个用户能不能查这个订单、能不能写这个文件。
+          检查失败返回可读错误，而不是抛异常或让模型自己判断。
+        </p>
+        <pre data-lang="python" data-file="工具检查">def query_order(order_no: str, runtime: Runtime[Context]) -&gt; str:
+    ctx = runtime.context
+    order = db.find(order_no)
+    if order is None or order.tenant_id != ctx.tenant_id:
+        return "订单不存在或无权限"
+    return order.status</pre>
+
+        
+        
+        <h2 id="practice">工程实践：三种写法与排查</h2>
+        <h3>三处必须带租户</h3>
+        <pre data-lang="python" data-file="thread / store / query">config = {"configurable": {"thread_id": f"{tenant}:{user}:{sid}"}}
+store.put(("tenants", tenant, "users", user), "pref", {...})
+db.query("... where tenant_id = ? and user_id = ?", (tenant, user))</pre>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>现象</th><th>原因</th><th>改法</th></tr></thead>
+            <tbody>
+              <tr><td>知道 id 就能读别人会话</td><td>没校验 thread 归属</td><td>读取前鉴权</td></tr>
+              <tr><td>偏好串号</td><td>namespace 少了租户</td><td>tenant 放第一段</td></tr>
+              <tr><td>工具查越权订单</td><td>只靠提示词</td><td>工具内检查归属</td></tr>
+              <tr><td>trace 泄漏隐私</td><td>记录完整 prompt</td><td>脱敏 / 采样</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="deep">再深入一点：实现细节与边界</h2>
+        <h3>checkpoint 的读取也要鉴权</h3>
+        <p>
+          知道 <code>thread_id</code> 不等于有权限。读 <code>get_state</code> /
+          <code>get_state_history</code> 前，先校验该 thread 属于当前租户与用户。
+        </p>
+
+        <h3>工具的三层检查</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>层</th><th>检查什么</th></tr></thead>
+            <tbody>
+              <tr><td>路由层</td><td>这个用户能否访问这个 Agent / thread</td></tr>
+              <tr><td>工具层</td><td>能否查这条订单、写这个文件</td></tr>
+              <tr><td>数据层</td><td>SQL / API 是否强制带租户条件</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>日志与 trace</h3>
+        <ul>
+          <li>默认不记录完整 prompt / completion；需要时脱敏。</li>
+          <li>trace 里不要出现密钥、完整手机号、身份证。</li>
+          <li>按租户分桶查询，避免跨租户排障时看到别人数据。</li>
+        </ul>
+
+        <h2 id="pitfalls">陷阱与窍门</h2>
+        <div class="callout warn">
+          <span class="ct">thread_id 只做随机数</span>
+          <p><strong>你会看到</strong>知道 id 就能读别人会话。<strong>因为</strong>没有校验归属。<strong>改成</strong>读 checkpoint 前先校验 thread 属于当前租户。</p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">Store 的 key 只用 user_id</span>
+          <p><strong>你会看到</strong>不同租户的同名用户互相覆盖。<strong>因为</strong>namespace 少了 tenant。<strong>改成</strong>所有 key 从租户开始。</p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">把密钥写进 state / 日志</span>
+          <p><strong>你会看到</strong>checkpoint 或 trace 里出现明文 key。<strong>因为</strong>state 会持久化。<strong>改成</strong>只放引用，运行时从密钥服务取。</p>
+        </div>
+
+        <h2 id="quiz">自检三问</h2>
+        <ol>
+          <li>thread 隔离与 Store 隔离分别防什么？</li>
+          <li>为什么工具权限不能只写在提示词里？</li>
+          <li>checkpoint 里哪些数据不该出现？</li>
+        </ol>
+
+        <h2 id="exercise">20 分钟动手练习</h2>
+        <ol>
+          <li>用两个租户的 thread_id 交错调用，确认读不到对方历史。</li>
+          <li>把 Store 的 namespace 从 user_id 改成 tenant + user，验证隔离。</li>
+          <li>写一个工具，检查订单归属，越权时返回可读错误。</li>
+        </ol>
+
+        <h2 id="next">下一步</h2>
+        <p>
+          回到 <a href="00-study-map.html">00 学习地图</a>，
+          或从 <a href="17-capstone.html">17 综合案例</a> 开始把隔离接进真实服务。
+        </p>
+
+      </article>
+    </main>
+    <script src="../assets/nav.js?v=1.1.0"></script>
+    <script src="../assets/mini-highlight.js?v=1.1.0"></script>
+    <script src="../assets/site.js?v=1.1.0"></script>
+  </body>
+</html>

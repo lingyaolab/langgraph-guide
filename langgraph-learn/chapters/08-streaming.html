@@ -18,8 +18,8 @@
       } catch (e) {}
     </script>
     <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
-    <link rel="stylesheet" href="../assets/base.css" />
-    <link rel="stylesheet" href="../assets/diagrams.css" />
+    <link rel="stylesheet" href="../assets/base.css?v=1.1.0" />
+    <link rel="stylesheet" href="../assets/diagrams.css?v=1.1.0" />
   </head>
   <body data-page="08-streaming" data-root="..">
     <main>
@@ -128,6 +128,72 @@ for chunk in graph.stream(
           <li>断线重连靠 <code>thread_id</code> + checkpoint，不是靠把已发事件缓存住。</li>
         </ul>
 
+        
+        
+        <h2 id="practice">工程实践：三种写法与排查</h2>
+        <h3>三种消费方式</h3>
+        <pre data-lang="python" data-file="values / updates / messages">for state in graph.stream(inputs, stream_mode="values"):
+    print("state", state)
+
+for update in graph.stream(inputs, stream_mode="updates"):
+    print("update", update)
+
+for message, meta in graph.stream(inputs, stream_mode="messages"):
+    print("token", message.content)</pre>
+        <h3>自定义进度</h3>
+        <pre data-lang="python" data-file="custom">from langgraph.config import get_stream_writer
+
+def node(state: dict) -&gt; dict:
+    writer = get_stream_writer()
+    writer({"progress": 0.5})
+    return {}</pre>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>现象</th><th>原因</th><th>改法</th></tr></thead>
+            <tbody>
+              <tr><td>前端重复渲染</td><td>把 values 当增量</td><td>用 updates 或前端 diff</td></tr>
+              <tr><td>没有 token 事件</td><td>节点没走 LangChain 模型</td><td>用 chat model 调用</td></tr>
+              <tr><td>断线后重复执行</td><td>重新 invoke</td><td>同 thread 重新订阅</td></tr>
+              <tr><td>取消后仍烧 token</td><td>没有传播取消</td><td>关闭生成器 / 取消任务</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="deep">再深入一点：实现细节与边界</h2>
+        <h3>同时消费多个 mode</h3>
+        <pre data-lang="python" data-file="组合 stream_mode">for mode, chunk in graph.stream(
+    {"messages": [("user", "你好")]},
+    stream_mode=["updates", "messages"],
+):
+    if mode == "updates":
+        print("node update:", chunk)
+    elif mode == "messages":
+        message, metadata = chunk
+        print("token:", message.content)</pre>
+
+        <h3>从节点内部发自定义事件</h3>
+        <pre data-lang="python" data-file="StreamWriter">from langgraph.config import get_stream_writer
+
+
+def retrieve(state: dict) -&gt; dict:
+    writer = get_stream_writer()
+    writer({"progress": 0.3, "stage": "retrieving"})
+    docs = search(state["question"])
+    writer({"progress": 0.8, "stage": "reranking"})
+    return {"docs": docs}</pre>
+        <p>
+          <code>get_stream_writer</code>
+          <span class="src" data-src="libs/langgraph/langgraph/config.py:126">config.py:126</span>
+          只在 <code>stream_mode="custom"</code> 时有输出；没有订阅时是 no-op。
+        </p>
+
+        <h3>取消与资源释放</h3>
+        <ul>
+          <li>同步生成器关闭会触发取消；异步用 <code>aclose()</code> 或任务取消。</li>
+          <li>取消后仍要保证工具调用有 <code>tool_result</code>，否则下一轮上下文不完整。</li>
+          <li>SSE 断开时，服务端要主动取消上游，而不是等模型跑完。</li>
+        </ul>
+
         <h2 id="pitfalls">陷阱与窍门</h2>
         <div class="callout warn">
           <span class="ct">把 values 当成增量</span>
@@ -164,8 +230,8 @@ for chunk in graph.stream(
 
       </article>
     </main>
-    <script src="../assets/nav.js"></script>
-    <script src="../assets/mini-highlight.js"></script>
-    <script src="../assets/site.js"></script>
+    <script src="../assets/nav.js?v=1.1.0"></script>
+    <script src="../assets/mini-highlight.js?v=1.1.0"></script>
+    <script src="../assets/site.js?v=1.1.0"></script>
   </body>
 </html>

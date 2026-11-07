@@ -18,8 +18,8 @@
       } catch (e) {}
     </script>
     <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
-    <link rel="stylesheet" href="../assets/base.css" />
-    <link rel="stylesheet" href="../assets/diagrams.css" />
+    <link rel="stylesheet" href="../assets/base.css?v=1.1.0" />
+    <link rel="stylesheet" href="../assets/diagrams.css?v=1.1.0" />
   </head>
   <body data-page="01-setup" data-root="..">
     <main>
@@ -134,6 +134,80 @@ print(graph.invoke({"text": "hello langgraph"}))</pre>
           </table>
         </div>
 
+        
+        
+        <h2 id="practice">工程实践：三种写法与排查</h2>
+        <h3>同一张图的三种入口</h3>
+        <pre data-lang="python" data-file="同步 / 异步 / 流式"># 1. 同步：拿最终 state
+out = graph.invoke({"text": "hi"})
+
+# 2. 异步：在 FastAPI / asyncio 里用
+out = await graph.ainvoke({"text": "hi"})
+
+# 3. 流式：拿每一步的更新
+for update in graph.stream({"text": "hi"}, stream_mode="updates"):
+    print(update)</pre>
+        <h3>把结构打印出来</h3>
+        <pre data-lang="python" data-file="Mermaid">mermaid = graph.get_graph().draw_mermaid()
+print(mermaid)</pre>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>现象</th><th>先看哪里</th></tr></thead>
+            <tbody>
+              <tr><td><code>StateGraph object is not callable</code></td><td>是否漏了 <code>compile()</code></td></tr>
+              <tr><td>只跑了一个节点就停</td><td>最后一条边是否指向 <code>END</code></td></tr>
+              <tr><td>字段被覆盖</td><td>节点是否返回了完整 state</td></tr>
+              <tr><td>第二次调用没有记忆</td><td>是否挂了 checkpointer / thread_id</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          这一章只解决「图能跑」。状态语义在 02，路由在 03；如果连最小图都跑不起来，不要先看后面的章节。
+        </p>
+
+        <h2 id="deep">再深入一点：实现细节与边界</h2>
+        <h3>同步、异步与流式入口</h3>
+        <p>
+          同一个编译后的图有四个常用入口：<code>invoke</code> / <code>ainvoke</code> 拿最终 state，
+          <code>stream</code> / <code>astream</code> 拿过程事件。它们不是四套实现，最终都落到同一个执行器。
+        </p>
+        <pre data-lang="python" data-file="四个入口">graph.invoke({"text": "hi"})
+await graph.ainvoke({"text": "hi"})
+
+for chunk in graph.stream({"text": "hi"}, stream_mode="updates"):
+    print(chunk)
+
+async for chunk in graph.astream({"text": "hi"}, stream_mode="updates"):
+    print(chunk)</pre>
+        <p>
+          <code>invoke</code>
+          <span class="src" data-src="libs/langgraph/langgraph/pregel/main.py:3870">main.py:3870</span>
+          是同步包装；异步与流式的入口分别在
+          <span class="src" data-src="libs/langgraph/langgraph/pregel/main.py:3117">main.py:3117</span>
+          与 <span class="src" data-src="libs/langgraph/langgraph/pregel/main.py:2705">main.py:2705</span>。
+        </p>
+
+        <h3>把图打印出来</h3>
+        <p>
+          图的结构不是只能靠脑补。编译后可以导出 Mermaid：
+          <code>graph.get_graph().draw_mermaid()</code>
+          <span class="src" data-src="libs/langgraph/langgraph/pregel/main.py:909">main.py:909</span>。
+          调试「为什么走了这条边」时，先看图，再看路由函数。
+        </p>
+
+        <h3>什么时候不该用图</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>场景</th><th>更简单的做法</th></tr></thead>
+            <tbody>
+              <tr><td>一次线性调用，没有分支</td><td>普通函数</td></tr>
+              <tr><td>不需要暂停 / 恢复</td><td>LangChain chain 或一个函数</td></tr>
+              <tr><td>只需要并发 IO</td><td><code>asyncio.gather</code></td></tr>
+              <tr><td>状态只在一个请求内有效</td><td>局部变量</td></tr>
+            </tbody>
+          </table>
+        </div>
+
         <h2 id="pitfalls">陷阱与窍门</h2>
         <div class="callout warn">
           <span class="ct">把 StateGraph 当函数直接调用</span>
@@ -170,8 +244,8 @@ print(graph.invoke({"text": "hello langgraph"}))</pre>
 
       </article>
     </main>
-    <script src="../assets/nav.js"></script>
-    <script src="../assets/mini-highlight.js"></script>
-    <script src="../assets/site.js"></script>
+    <script src="../assets/nav.js?v=1.1.0"></script>
+    <script src="../assets/mini-highlight.js?v=1.1.0"></script>
+    <script src="../assets/site.js?v=1.1.0"></script>
   </body>
 </html>

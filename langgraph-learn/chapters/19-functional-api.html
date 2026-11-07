@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="LangGraph 函数式 API：用 @entrypoint 定义工作流、用 @task 定义可缓存步骤，以及它和 StateGraph 的取舍。" />
+    <meta property="og:type" content="article" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:site_name" content="LangGraph 1.2.20 学习站" />
+    <meta property="og:title" content="19 函数式 API：@entrypoint 与 @task · LangGraph 1.2.20 学习站" />
+    <meta property="og:description" content="LangGraph 函数式 API：用 @entrypoint 定义工作流、用 @task 定义可缓存步骤，以及它和 StateGraph 的取舍。" />
+    <title>19 函数式 API：@entrypoint 与 @task · LangGraph 1.2.20 学习站</title>
+    <script>
+      try {
+        var t = localStorage.getItem("as-learn-theme");
+        if (!t) t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    </script>
+    <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
+    <link rel="stylesheet" href="../assets/base.css?v=1.1.0" />
+    <link rel="stylesheet" href="../assets/diagrams.css?v=1.1.0" />
+  </head>
+  <body data-page="19-functional-api" data-root="..">
+    <main>
+      <article class="article">
+
+        <h1>19 · 函数式 API：@entrypoint 与 @task</h1>
+        <p class="lede">
+          不是所有流程都适合画成图。LangGraph 还提供函数式 API：
+          用 <code>@entrypoint</code> 包住一段普通 Python，用 <code>@task</code> 标记可重试 / 可缓存的步骤。
+          这一章讲它和 StateGraph 的边界。
+        </p>
+
+        <h2 id="goals">读完你能做到</h2>
+        <ul class="goals">
+          <li>用 <code>@entrypoint</code> 和 <code>@task</code> 写一个可持久化的工作流</li>
+          <li>说清函数式 API 与 StateGraph 的职责差异</li>
+          <li>知道什么时候该从函数式迁移到显式图</li>
+          <li>用 <code>get_config</code> 读取 thread_id 等运行时配置</li>
+        </ul>
+
+        <h2 id="why">先说为什么：有些流程就是一段代码</h2>
+        <p>
+          如果流程是「取数据 → 调模型 → 写结果」这种线性结构，画图会增加很多样板代码。
+          函数式 API 让你保留普通 Python 的控制流，同时获得 checkpoint、重试与流式能力。
+          当分支、循环、并行、多 Agent 变复杂时，再迁移到 StateGraph。
+        </p>
+
+        <h2 id="minimal">最小可跑：一个 entrypoint + 两个 task</h2>
+        <pre data-lang="python" data-file="functional.py">from langgraph.func import entrypoint, task
+
+
+@task
+def fetch(url: str) -&gt; str:
+    return f"content of {url}"
+
+
+@task
+def summarize(text: str) -&gt; str:
+    return text[:20]
+
+
+@entrypoint()
+def workflow(url: str) -&gt; str:
+    raw = fetch(url).result()
+    return summarize(raw).result()
+
+
+print(workflow.invoke("https://example.com"))</pre>
+        <p>
+          <code>@task</code>
+          <span class="src" data-src="libs/langgraph/langgraph/func/__init__.py:110">__init__.py:110</span>
+          把函数包成可单独调度、可重试、可缓存的步骤；
+          <code>@entrypoint</code>
+          <span class="src" data-src="libs/langgraph/langgraph/func/__init__.py:262">__init__.py:262</span>
+          把整段工作流暴露成可 <code>invoke</code> / <code>stream</code> 的对象。
+        </p>
+
+        <h2 id="line-by-line">逐行解读：result 与 checkpoint</h2>
+        <p>
+          <code>fetch(url).result()</code> 会立即执行并拿结果；如果工作流挂了 checkpointer，
+          每个 task 的结果都会写入 checkpoint，恢复时不会重复执行已完成的 task。
+          这也是函数式 API 和「普通 async 函数」最大的区别。
+        </p>
+        <pre data-lang="python" data-file="带 thread 的调用">from langgraph.checkpoint.memory import InMemorySaver
+
+workflow = workflow.compile(checkpointer=InMemorySaver())
+config = {"configurable": {"thread_id": "u-1"}}
+workflow.invoke("https://example.com", config)</pre>
+
+        <h2 id="config">运行时配置：get_config</h2>
+        <p>
+          在 entrypoint 内部可以用 <code>get_config()</code>
+          <span class="src" data-src="libs/langgraph/langgraph/config.py:17">config.py:17</span>
+          读取当前线程、用户与自定义配置。不要从全局变量拿请求上下文。
+        </p>
+        <pre data-lang="python" data-file="读取 thread_id">from langgraph.config import get_config
+
+
+@entrypoint()
+def workflow(url: str) -&gt; str:
+    cfg = get_config()
+    thread_id = cfg["configurable"]["thread_id"]
+    return f"{thread_id}:{url}"</pre>
+
+        <h2 id="compare">函数式 API vs StateGraph</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>维度</th><th>函数式 API</th><th>StateGraph</th></tr></thead>
+            <tbody>
+              <tr><td>控制流</td><td>普通 Python if / for</td><td>节点 + 边</td></tr>
+              <tr><td>状态</td><td>函数参数与返回值</td><td>显式 State + reducer</td></tr>
+              <tr><td>可视化</td><td>弱</td><td>强</td></tr>
+              <tr><td>中断 / 恢复</td><td>支持 task 级</td><td>节点级，更细</td></tr>
+              <tr><td>适合</td><td>线性、轻量工作流</td><td>分支、并行、多 Agent</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        
+        
+        <h2 id="practice">工程实践：三种写法与排查</h2>
+        <h3>task 的三种用法</h3>
+        <pre data-lang="python" data-file="顺序 / 并行 / 带配置"># 顺序
+a = fetch(url).result()
+b = summarize(a).result()
+
+# 并行
+a, b = (fetch(u) for u in urls)
+results = [x.result() for x in (a, b)]
+
+# 带重试
+@task(retry_policy=RetryPolicy(max_attempts=3, retry_on=TimeoutError))
+def fetch(url: str) -&gt; str: ...</pre>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>现象</th><th>原因</th><th>改法</th></tr></thead>
+            <tbody>
+              <tr><td>恢复后重复执行</td><td>没有 checkpointer / task 不幂等</td><td>挂 checkpointer + 幂等键</td></tr>
+              <tr><td>task 不并行</td><td>用了 <code>.result()</code> 立刻取</td><td>先收集 task 再取结果</td></tr>
+              <tr><td>读不到 thread_id</td><td>用了全局变量</td><td><code>get_config()</code></td></tr>
+              <tr><td>流程越写越复杂</td><td>分支超过两三层</td><td>迁移到 StateGraph</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="deep">再深入一点：实现细节与边界</h2>
+        <h3>task 的重试与缓存</h3>
+        <p>
+          <code>@task</code> 支持重试与缓存，但只对「可重放」的步骤有意义。
+          发邮件、扣款这类副作用要加幂等键，或放到 entrypoint 末尾。
+        </p>
+        <pre data-lang="python" data-file="带重试的 task">@task(retry_policy=RetryPolicy(max_attempts=3, retry_on=TimeoutError))
+def fetch(url: str) -&gt; str:
+    return client.get(url).text</pre>
+
+        <h3>函数式与图混用</h3>
+        <p>
+          一个 entrypoint 里可以调用编译后的子图，反之也可以把 entrypoint 当成图的一个节点。
+          混用时先想清楚 checkpoint 归谁管，不要两层各写一份。
+        </p>
+
+        <h3>边界</h3>
+        <ul>
+          <li>需要可视化、并行 fan-out、复杂 HITL 时，显式图更清楚。</li>
+          <li>函数式 API 的恢复粒度是 task，不是节点。</li>
+          <li>不要在 entrypoint 里用全局变量保存请求上下文。</li>
+        </ul>
+
+        <h2 id="pitfalls">陷阱与窍门</h2>
+        <div class="callout warn">
+          <span class="ct">在 task 里写不可重放的副作用</span>
+          <p><strong>你会看到</strong>恢复后重复发邮件。<strong>因为</strong>task 可能重试。<strong>改成</strong>加幂等键，或把副作用放到 entrypoint 末尾。</p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">以为 task 会自动并行</span>
+          <p><strong>你会看到</strong>顺序执行。<strong>因为</strong><code>.result()</code> 是阻塞取结果。<strong>改成</strong>需要并行时显式 <code>asyncio.gather</code> 或改用 Send。</p>
+        </div>
+        <div class="callout warn">
+          <span class="ct">复杂流程硬用函数式</span>
+          <p><strong>你会看到</strong>if/else 套得很深，无法可视化。<strong>因为</strong>控制流回到了代码。<strong>改成</strong>分支超过两三层就迁移到 StateGraph。</p>
+        </div>
+
+        <h2 id="quiz">自检三问</h2>
+        <ol>
+          <li><code>@task</code> 与普通函数相比多了什么能力？</li>
+          <li>函数式 API 的 checkpoint 粒度是什么？</li>
+          <li>什么信号说明该迁移到 StateGraph？</li>
+        </ol>
+
+        <h2 id="exercise">20 分钟动手练习</h2>
+        <ol>
+          <li>把最小例子加上 checkpointer，跑两次，确认第二次不重复 fetch。</li>
+          <li>在 entrypoint 里读 <code>thread_id</code>，把它写进结果。</li>
+          <li>把同一个流程改写成 StateGraph，比较代码量与可观察性。</li>
+        </ol>
+
+        <h2 id="next">下一步</h2>
+        <p>
+          下一章 <a href="20-visualization-debug.html">20 可视化与调试</a>：
+          图建好之后，先把它画出来，再决定怎么调。
+        </p>
+
+      </article>
+    </main>
+    <script src="../assets/nav.js?v=1.1.0"></script>
+    <script src="../assets/mini-highlight.js?v=1.1.0"></script>
+    <script src="../assets/site.js?v=1.1.0"></script>
+  </body>
+</html>

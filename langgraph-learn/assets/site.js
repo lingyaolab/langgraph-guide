@@ -235,8 +235,8 @@
       '<button class="icon-btn" id="menu-toggle" title="目录" aria-label="章节导航" aria-controls="sidebar" aria-expanded="false">☰</button>' +
       '<a class="brand" href="' +
       abs("index.html") +
-      '"><span class="logo">◆</span><span class="bname">Spring AI 学习站</span>' +
-      '<span class="bshort">Spring AI</span></a>' +
+      '"><span class="logo">◆</span><span class="bname">LangGraph 学习站</span>' +
+      '<span class="bshort">LangGraph</span></a>' +
       '<span class="ver">v' +
       SITE.version +
       "</span>" +

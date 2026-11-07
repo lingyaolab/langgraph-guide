@@ -18,8 +18,8 @@
       } catch (e) {}
     </script>
     <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
-    <link rel="stylesheet" href="../assets/base.css" />
-    <link rel="stylesheet" href="../assets/diagrams.css" />
+    <link rel="stylesheet" href="../assets/base.css?v=1.1.0" />
+    <link rel="stylesheet" href="../assets/diagrams.css?v=1.1.0" />
   </head>
   <body data-page="02-state-reducer" data-root="..">
     <main>
@@ -124,6 +124,70 @@ class State(MessagesState):
           <li>不负责裁剪长度；窗口裁减要自己写 reducer 或节点。</li>
         </ul>
 
+        
+        
+        <h2 id="practice">工程实践：三种写法与排查</h2>
+        <h3>三种 reducer 写法</h3>
+        <pre data-lang="python" data-file="覆盖 / 追加 / 自定义">class State(TypedDict):
+    # 1. 默认覆盖
+    status: str
+    # 2. 追加
+    logs: Annotated[list[str], operator.add]
+    # 3. 自定义合并
+    tags: Annotated[list[str], merge_tags]</pre>
+        <h3>消息去重与删除</h3>
+        <pre data-lang="python" data-file="RemoveMessage">from langchain_core.messages import RemoveMessage
+
+def trim(state: MessagesState) -&gt; dict:
+    return {"messages": [RemoveMessage(id=m.id) for m in state["messages"][:-4]]}</pre>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>现象</th><th>原因</th><th>改法</th></tr></thead>
+            <tbody>
+              <tr><td>并行写同一字段报错</td><td>没有 reducer</td><td>加 <code>Annotated</code></td></tr>
+              <tr><td>消息只剩最后一条</td><td>字段不是 <code>add_messages</code></td><td>继承 <code>MessagesState</code></td></tr>
+              <tr><td>消息重复</td><td>新消息 id 与旧消息相同</td><td>让每条消息有唯一 id</td></tr>
+              <tr><td>state 越来越大</td><td>把大对象放进字段</td><td>只存 id / 摘要</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          reducer 是图里最像「数据库 schema」的部分。先定字段语义，再写节点；
+          反过来的代码通常会在并行或恢复时出问题。
+        </p>
+
+        <h2 id="deep">再深入一点：实现细节与边界</h2>
+        <h3>自定义 reducer</h3>
+        <p>
+          内置 reducer 不够时，写一个纯函数：参数是旧值与新值，返回合并后的值。
+          它可能被多次调用，所以不能有副作用。
+        </p>
+        <pre data-lang="python" data-file="自定义 reducer">def merge_tags(left: list[str], right: list[str]) -> list[str]:
+    return sorted(set(left) | set(right))
+
+
+class State(TypedDict):
+    tags: Annotated[list[str], merge_tags]</pre>
+
+        <h3>删除消息：RemoveMessage</h3>
+        <p>
+          <code>add_messages</code> 不只追加，也识别删除指令。
+          需要从历史里移除某条消息时，返回一个 <code>RemoveMessage</code>：
+        </p>
+        <pre data-lang="python" data-file="删除消息">from langchain_core.messages import RemoveMessage
+
+
+def forget(state: MessagesState) -> dict:
+    first = state["messages"][0]
+    return {"messages": [RemoveMessage(id=first.id)]}</pre>
+
+        <h3>字段设计的三个建议</h3>
+        <ul>
+          <li>能推导出来的值不要存：它会让 checkpoint 变大，还容易与源字段不一致。</li>
+          <li>并行写入的字段一定加 reducer；顺序敏感的字段显式排序。</li>
+          <li>大对象放外部存储，state 里只放 id 或摘要。</li>
+        </ul>
+
         <h2 id="pitfalls">陷阱与窍门</h2>
         <div class="callout warn">
           <span class="ct">并行节点写同一个非 reducer 字段</span>
@@ -160,8 +224,8 @@ class State(MessagesState):
 
       </article>
     </main>
-    <script src="../assets/nav.js"></script>
-    <script src="../assets/mini-highlight.js"></script>
-    <script src="../assets/site.js"></script>
+    <script src="../assets/nav.js?v=1.1.0"></script>
+    <script src="../assets/mini-highlight.js?v=1.1.0"></script>
+    <script src="../assets/site.js?v=1.1.0"></script>
   </body>
 </html>
